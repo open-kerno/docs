@@ -1,0 +1,259 @@
+---
+sidebar_position: 3
+title: Encryption Standards
+description: Engineering guide for encrypting data at rest and in transit across all systems using AES-256 and TLS 1.2+.
+author: CTO
+tags: [standards, security, encryption, aes-256, tls, compliance]
+---
+
+# Encryption Standards
+
+> **From the CTO — Required reading for all engineering and infrastructure teams.**
+> Encryption is not optional. It is a baseline requirement for every system we build.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard at a Glance](#the-standard-at-a-glance)
+3. [Data at Rest: AES-256](#data-at-rest-aes-256)
+4. [Data in Transit: TLS 1.2+](#data-in-transit-tls-12)
+5. [Forbidden Algorithms](#forbidden-algorithms)
+6. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+Encryption protects our users and our business. When we get it wrong, the consequences are permanent.
+
+### What is at risk
+
+**User data gets exposed.**
+If a database is leaked and data is not encrypted, user passwords, personal information, and payment data are immediately readable by anyone who downloads the file. There is no recovery from that.
+
+**We fail compliance audits.**
+SOC 2 and GDPR both require strong encryption for data at rest and in transit. A failed audit or a data breach can block enterprise sales, trigger large fines, and in some regions, require notifying every affected user publicly.
+
+**We lose trust — permanently.**
+Startups depend on trust. A single security incident that exposes user data because of weak encryption can end a company. The cost of doing it right now is nothing compared to the cost of a breach.
+
+> **The rule is simple:** If data is sensitive, it must be encrypted. No exceptions.
+
+---
+
+## The Standard at a Glance
+
+| Data State | Standard | Where it Applies |
+|---|---|---|
+| **At Rest** | AES-256-GCM | Databases, S3 buckets, disk volumes, backups, secrets |
+| **In Transit** | TLS 1.2 or TLS 1.3 | APIs, web traffic, internal microservice calls, webhooks |
+
+---
+
+## Data at Rest: AES-256
+
+### What "data at rest" means
+
+Data at rest is any data that is stored — not moving across a network. This includes:
+
+- Database rows (user records, payment info, PII)
+- Files stored in S3 or cloud storage
+- Disk volumes on servers and containers
+- Backups and exports
+- Secrets and credentials stored in config files or vaults
+
+All of it must be encrypted using **AES-256**.
+
+### Why AES-256
+
+AES-256 is the current global standard for symmetric encryption. It is used by governments, banks, and every major cloud provider. There is no credible attack against it when used correctly. It is fast, well-supported in every language, and battle-tested in production at scale.
+
+We use **AES-256-GCM** specifically. GCM (Galois/Counter Mode) provides both encryption and message authentication in one step. This means you cannot tamper with the ciphertext without detection.
+
+### Infrastructure requirements
+
+- All RDS/database instances: enable encryption at rest (AWS KMS or equivalent).
+- All S3 buckets: server-side encryption with AES-256 (SSE-S3 or SSE-KMS). No bucket may be unencrypted.
+- All EBS volumes and container disk mounts: encrypted by default.
+- All secrets (API keys, credentials): stored in a secrets manager (AWS Secrets Manager, HashiCorp Vault), never in environment files committed to git.
+
+> **Architectural warning:** Enabling disk-level encryption on your cloud provider is necessary but not sufficient. Sensitive fields (passwords, SSNs, tokens) must also be encrypted at the application level before they are written to the database.
+
+### Node.js / TypeScript implementation
+
+Use the built-in `crypto` module. No third-party package needed.
+
+```typescript
+import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
+
+const ALGORITHM = 'aes-256-gcm';
+const KEY_LENGTH = 32; // 256 bits
+const IV_LENGTH = 12;  // 96 bits — recommended for GCM
+
+// In production, load this from your secrets manager. Never hardcode it.
+const SECRET_KEY = Buffer.from(process.env.ENCRYPTION_KEY!, 'hex'); // 32-byte hex string
+
+export function encrypt(plaintext: string): string {
+  const iv = randomBytes(IV_LENGTH);
+  const cipher = createCipheriv(ALGORITHM, SECRET_KEY, iv);
+
+  const encrypted = Buffer.concat([
+    cipher.update(plaintext, 'utf8'),
+    cipher.final(),
+  ]);
+
+  const authTag = cipher.getAuthTag(); // GCM authentication tag
+
+  // Store as: iv:authTag:ciphertext (all hex-encoded)
+  return [
+    iv.toString('hex'),
+    authTag.toString('hex'),
+    encrypted.toString('hex'),
+  ].join(':');
+}
+
+export function decrypt(payload: string): string {
+  const [ivHex, authTagHex, encryptedHex] = payload.split(':');
+
+  const iv = Buffer.from(ivHex, 'hex');
+  const authTag = Buffer.from(authTagHex, 'hex');
+  const encrypted = Buffer.from(encryptedHex, 'hex');
+
+  const decipher = createDecipheriv(ALGORITHM, SECRET_KEY, iv);
+  decipher.setAuthTag(authTag);
+
+  return decipher.update(encrypted) + decipher.final('utf8');
+}
+```
+
+**Usage:**
+
+```typescript
+const payload = encrypt('user@example.com');
+// '3f2a1b...:c4e9d0...:8ab1f3...'
+
+const original = decrypt(payload);
+// 'user@example.com'
+```
+
+> **Never reuse an IV.** A new random IV must be generated for every encryption call. Reusing an IV with the same key completely breaks GCM security. The code above generates a fresh IV on every call — do not change this.
+
+> **Key rotation:** Store encryption keys in your secrets manager with rotation enabled. The encrypted payload format above (iv:authTag:ciphertext) is designed to be self-contained, which makes key rotation migrations straightforward.
+
+---
+
+## Data in Transit: TLS 1.2+
+
+### What "data in transit" means
+
+Data in transit is any data moving across a network — between a client and a server, between two microservices, or between your system and a third-party API. If it crosses a network boundary, it must be encrypted.
+
+This includes:
+
+- Browser to API (HTTPS)
+- Mobile app to API (HTTPS)
+- Internal microservice-to-microservice calls
+- Webhooks sent or received
+- Database connections from application servers
+- Calls to third-party APIs (Twilio, Stripe, etc.)
+
+### The requirement
+
+All traffic must use **TLS 1.2 at minimum**. TLS 1.3 is preferred where supported.
+
+| Version | Status |
+|---|---|
+| TLS 1.3 | Preferred — faster handshake, stronger defaults |
+| TLS 1.2 | Allowed — configure strong cipher suites only |
+| TLS 1.1 | **Forbidden** |
+| TLS 1.0 | **Forbidden** |
+| SSL (any version) | **Forbidden** |
+
+### Configuration: Load Balancer / Cloudflare
+
+Most teams should enforce TLS at the edge, not in application code.
+
+**Cloudflare:**
+- Set SSL/TLS mode to **Full (Strict)**.
+- Under TLS settings, set **Minimum TLS Version** to `TLS 1.2`.
+- Enable **TLS 1.3** (it is a toggle in the dashboard).
+- Enable **HSTS** with a minimum `max-age` of 1 year.
+
+**AWS Application Load Balancer:**
+- Use the `ELBSecurityPolicy-TLS13-1-2-2021-06` security policy or newer.
+- This policy allows TLS 1.2 and 1.3 and disables all weaker versions.
+- Do not use the `ELBSecurityPolicy-2016-08` legacy policy — it permits TLS 1.0.
+
+**Internal microservices:**
+- Use mutual TLS (mTLS) for service-to-service communication if your infrastructure supports it (e.g., a service mesh like Istio or AWS App Mesh).
+- At minimum, all internal HTTP calls must go over HTTPS — not plain HTTP, even inside a private VPC.
+
+> **Architectural warning:** "We are behind a VPC so it is safe" is not an acceptable reason to use plain HTTP between services. Internal network compromise (a misconfigured security group, a compromised container) exposes all unencrypted traffic in the same network. Encrypt in transit everywhere.
+
+### Database connections
+
+Every connection string to a database must include TLS. Example for PostgreSQL:
+
+```typescript
+// ✅ Correct — TLS required
+const client = new Client({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: true }, // validates the server certificate
+});
+
+// ❌ Wrong — disables certificate validation
+const client = new Client({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
+```
+
+`rejectUnauthorized: false` disables certificate validation. It makes the TLS connection useless because you can no longer detect a man-in-the-middle attack. Do not use it in production, even temporarily.
+
+---
+
+## Forbidden Algorithms
+
+The following algorithms must never be used for any security-sensitive operation — authentication, data protection, token generation, or password hashing.
+
+| Algorithm | Why it is forbidden |
+|---|---|
+| **MD5** | Fully broken. Collision attacks are trivial. Takes seconds to crack with a modern GPU. |
+| **SHA-1** | Broken. Google demonstrated a practical collision attack in 2017 (SHAttered). |
+| **DES / 3DES** | Key size too small. DES (56-bit) is breakable in hours. 3DES is deprecated by NIST. |
+| **RC4** | Multiple known vulnerabilities. Forbidden in TLS since RFC 7465 (2015). |
+| **TLS 1.0 / 1.1** | Deprecated. Vulnerable to BEAST, POODLE, and other protocol attacks. |
+| **SSL (all versions)** | Completely broken. POODLE, DROWN, and BEAST attacks. Never use. |
+| **ECB mode (any cipher)** | Does not hide data patterns. Identical plaintext blocks produce identical ciphertext blocks. |
+
+> **On MD5 and SHA-1 for non-security uses:** MD5 and SHA-1 are acceptable for non-security checksums — verifying a file download, generating a cache key, or deduplicating data. They are forbidden only for security purposes: password hashing, digital signatures, token integrity, and authentication.
+
+---
+
+## Quick Reference
+
+```
+✅  Data at rest:    AES-256-GCM, fresh IV per call, key from secrets manager
+✅  Data in transit: TLS 1.2 (minimum), TLS 1.3 (preferred), HTTPS everywhere
+✅  Passwords:       bcrypt / argon2 (never encrypt passwords — hash them)
+
+❌  Never use: MD5, SHA-1, DES, 3DES, RC4, ECB mode, SSL, TLS 1.0, TLS 1.1
+❌  Never commit encryption keys to git
+❌  Never disable rejectUnauthorized in TLS connections
+❌  Never reuse an IV
+```
+
+| Task | Tool / Standard |
+|---|---|
+| Encrypt a field before storing | `aes-256-gcm` via Node.js `crypto` |
+| Protect data on disk / S3 | Cloud provider encryption (KMS/SSE) |
+| Secure API traffic | TLS 1.2+ at load balancer / Cloudflare |
+| Secure internal service calls | HTTPS + mTLS where available |
+| Store secrets | AWS Secrets Manager or HashiCorp Vault |
+| Hash passwords | `bcrypt` or `argon2` — not encryption |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#security` channel or reach out to the platform team.*
