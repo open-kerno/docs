@@ -1,19 +1,9 @@
-facebook:
-  label: Facebook
-  permalink: /facebook
-  description: Facebook tag description
+engineering:
+  label: Engineering
+  permalink: /engineering
+  description: Engineering updates and technical decisions.
 
-hello:
-  label: Hello
-  permalink: /hello
-  description: Hello tag description
-
-docusaurus:
-  label: Docusaurus
-  permalink: /docusaurus
-  description: Docusaurus tag description
-
-hola:
-  label: Hola
-  permalink: /hola
-  description: Hola tag description
+standards:
+  label: Standards
+  permalink: /standards
+  description: Technical standards and best practices.
