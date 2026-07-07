@@ -1,0 +1,160 @@
+---
+sidebar_position: 1
+title: TypeScript Implementation
+description: Code examples for parsing, validating, and formatting phone numbers to E.164 using awesome-phonenumber.
+tags: [typescript, validation, e164]
+---
+
+# TypeScript Implementation
+
+All examples use [`awesome-phonenumber`](https://www.npmjs.com/package/awesome-phonenumber). Install it first:
+
+```bash
+npm install awesome-phonenumber
+```
+
+---
+
+## Installation & Import
+
+```typescript
+import { parsePhoneNumber } from 'awesome-phonenumber';
+```
+
+---
+
+## Parsing User Input
+
+User input is always messy. Parse it before you do anything else.
+
+```typescript
+import { parsePhoneNumber } from 'awesome-phonenumber';
+
+function parseUserInput(rawInput: string, defaultRegion = 'US') {
+  // Pass the default region so local numbers (without country code) resolve correctly.
+  return parsePhoneNumber(rawInput, { regionCode: defaultRegion });
+}
+
+const pn = parseUserInput('(415) 555-0100');
+console.log(pn.valid);          // true
+console.log(pn.number?.e164);   // '+14155550100'
+```
+
+> **Always pass a `regionCode` default** when users are in a known country. Without it, local numbers (without `+` prefix) may fail to parse.
+
+---
+
+## Validation
+
+Check two things before persisting: is the number valid, and is it mobile (for SMS)?
+
+```typescript
+import { parsePhoneNumber } from 'awesome-phonenumber';
+
+interface PhoneValidationResult {
+  valid: boolean;
+  isMobile: boolean;
+  e164: string | null;
+  error?: string;
+}
+
+function validatePhoneNumber(
+  rawInput: string,
+  regionCode = 'US'
+): PhoneValidationResult {
+  const pn = parsePhoneNumber(rawInput, { regionCode });
+
+  if (!pn.valid) {
+    return {
+      valid: false,
+      isMobile: false,
+      e164: null,
+      error: 'Invalid phone number',
+    };
+  }
+
+  const isMobile = pn.typeIsMobile ?? false;
+
+  return {
+    valid: true,
+    isMobile,
+    e164: pn.number?.e164 ?? null,
+  };
+}
+```
+
+**Usage:**
+
+```typescript
+const result = validatePhoneNumber('+44 20 7946 0958', 'GB');
+console.log(result.valid);    // true
+console.log(result.isMobile); // false (UK landline)
+console.log(result.e164);     // '+442079460958'
+
+const smsResult = validatePhoneNumber('+1 415 555 0100', 'US');
+console.log(smsResult.isMobile); // true
+```
+
+> **Architectural warning:** If you are sending an SMS, check `isMobile` first. Sending SMS to a landline wastes money and may cause errors on some carriers. Some providers charge for failed deliveries.
+
+---
+
+## Formatting to E.164 Before Persistence
+
+This is the critical step. Call this function before any `INSERT` or `UPDATE` to a phone number column.
+
+```typescript
+import { parsePhoneNumber } from 'awesome-phonenumber';
+
+/**
+ * Normalizes a raw phone number string to E.164 format.
+ * Throws if the input is not a valid phone number.
+ */
+function toE164(rawInput: string, regionCode = 'US'): string {
+  const pn = parsePhoneNumber(rawInput, { regionCode });
+
+  if (!pn.valid || !pn.number?.e164) {
+    throw new Error(`Invalid phone number: "${rawInput}"`);
+  }
+
+  return pn.number.e164;
+}
+
+// Before saving to the database:
+const normalized = toE164('(415) 555-0100'); // '+14155550100'
+await db.users.update({ id: userId, phoneNumber: normalized });
+```
+
+> **Never save raw user input.** Always call `toE164` before persistence. If the input is invalid, surface the error to the user at the API boundary — do not save a null or the raw string as a fallback.
+
+---
+
+## Full Validation + Persistence Flow
+
+```typescript
+import { parsePhoneNumber } from 'awesome-phonenumber';
+
+async function updateUserPhoneNumber(
+  userId: string,
+  rawPhoneInput: string,
+  regionCode = 'US'
+): Promise<void> {
+  const pn = parsePhoneNumber(rawPhoneInput, { regionCode });
+
+  // 1. Validate
+  if (!pn.valid) {
+    throw new BadRequestError('Please enter a valid phone number.');
+  }
+
+  // 2. Check for mobile if this number will receive SMS
+  if (!pn.typeIsMobile) {
+    throw new BadRequestError('Please enter a mobile phone number to receive SMS.');
+  }
+
+  // 3. Normalize
+  const e164 = pn.number!.e164;
+
+  // 4. Persist
+  await db.users.update({ id: userId, phoneNumber: e164 });
+}
+```
