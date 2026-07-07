@@ -81,67 +81,6 @@ We use **AES-256-GCM** specifically. GCM (Galois/Counter Mode) provides both enc
 
 > **Architectural warning:** Enabling disk-level encryption on your cloud provider is necessary but not sufficient. Sensitive fields (passwords, SSNs, tokens) must also be encrypted at the application level before they are written to the database.
 
-### Node.js / TypeScript implementation
-
-Use the built-in `crypto` module. No third-party package needed.
-
-```typescript
-import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
-
-const ALGORITHM = 'aes-256-gcm';
-const KEY_LENGTH = 32; // 256 bits
-const IV_LENGTH = 12;  // 96 bits — recommended for GCM
-
-// In production, load this from your secrets manager. Never hardcode it.
-const SECRET_KEY = Buffer.from(process.env.ENCRYPTION_KEY!, 'hex'); // 32-byte hex string
-
-export function encrypt(plaintext: string): string {
-  const iv = randomBytes(IV_LENGTH);
-  const cipher = createCipheriv(ALGORITHM, SECRET_KEY, iv);
-
-  const encrypted = Buffer.concat([
-    cipher.update(plaintext, 'utf8'),
-    cipher.final(),
-  ]);
-
-  const authTag = cipher.getAuthTag(); // GCM authentication tag
-
-  // Store as: iv:authTag:ciphertext (all hex-encoded)
-  return [
-    iv.toString('hex'),
-    authTag.toString('hex'),
-    encrypted.toString('hex'),
-  ].join(':');
-}
-
-export function decrypt(payload: string): string {
-  const [ivHex, authTagHex, encryptedHex] = payload.split(':');
-
-  const iv = Buffer.from(ivHex, 'hex');
-  const authTag = Buffer.from(authTagHex, 'hex');
-  const encrypted = Buffer.from(encryptedHex, 'hex');
-
-  const decipher = createDecipheriv(ALGORITHM, SECRET_KEY, iv);
-  decipher.setAuthTag(authTag);
-
-  return decipher.update(encrypted) + decipher.final('utf8');
-}
-```
-
-**Usage:**
-
-```typescript
-const payload = encrypt('user@example.com');
-// '3f2a1b...:c4e9d0...:8ab1f3...'
-
-const original = decrypt(payload);
-// 'user@example.com'
-```
-
-> **Never reuse an IV.** A new random IV must be generated for every encryption call. Reusing an IV with the same key completely breaks GCM security. The code above generates a fresh IV on every call — do not change this.
-
-> **Key rotation:** Store encryption keys in your secrets manager with rotation enabled. The encrypted payload format above (iv:authTag:ciphertext) is designed to be self-contained, which makes key rotation migrations straightforward.
-
 ---
 
 ## Data in Transit: TLS 1.2+
@@ -247,7 +186,7 @@ The following algorithms must never be used for any security-sensitive operation
 
 | Task | Tool / Standard |
 |---|---|
-| Encrypt a field before storing | `aes-256-gcm` via Node.js `crypto` |
+| Encrypt a field before storing | `aes-256-gcm` via Node.js `crypto` — see [TypeScript Implementation](./typescript-implementation) |
 | Protect data on disk / S3 | Cloud provider encryption (KMS/SSE) |
 | Secure API traffic | TLS 1.2+ at load balancer / Cloudflare |
 | Secure internal service calls | HTTPS + mTLS where available |
