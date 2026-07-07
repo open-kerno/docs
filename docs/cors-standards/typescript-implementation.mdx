@@ -1,0 +1,236 @@
+---
+sidebar_position: 1
+title: TypeScript Implementation
+description: Code examples for configuring CORS in Express and Node.js — origin whitelisting, credential policy, and preflight handling.
+tags: [typescript, cors, express, http, api-security]
+---
+
+# TypeScript Implementation
+
+All examples use the `cors` npm package with Express. Install once, configure per environment.
+
+---
+
+## Installation & Import
+
+```bash
+npm install cors
+npm install --save-dev @types/cors
+```
+
+```typescript
+import cors, { CorsOptions, CorsOptionsDelegate } from 'cors';
+import express from 'express';
+```
+
+---
+
+## Static Single-Origin Configuration
+
+Simplest case: one allowed origin, no credentials required.
+
+```typescript
+const app = express();
+
+app.use(
+  cors({
+    origin: 'https://app.example.com',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Authorization', 'Content-Type'],
+    maxAge: 86400, // cache preflight for 24 hours
+  })
+);
+```
+
+---
+
+## Dynamic Origin Whitelist
+
+Multiple allowed origins — matches the incoming `Origin` header against a fixed set and reflects the matched value. The `cors` package automatically adds `Vary: Origin` when an origin function is used.
+
+```typescript
+const ALLOWED_ORIGINS = new Set<string>([
+  'https://app.example.com',
+  'https://admin.example.com',
+]);
+
+const corsOptions: CorsOptionsDelegate = (req, callback) => {
+  const requestOrigin = req.headers.origin;
+
+  if (!requestOrigin || !ALLOWED_ORIGINS.has(requestOrigin)) {
+    callback(new Error(`Origin not allowed: ${requestOrigin}`));
+    return;
+  }
+
+  callback(null, {
+    origin: requestOrigin,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Authorization', 'Content-Type', 'X-Request-ID'],
+    maxAge: 86400,
+  });
+};
+
+const app = express();
+app.use(cors(corsOptions));
+```
+
+---
+
+## With Credentials
+
+Use this only when the client needs to send cookies or HTTP authentication cross-origin. The origin must be explicit — never `*`.
+
+```typescript
+const TRUSTED_ORIGINS = new Set<string>([
+  'https://app.example.com',
+]);
+
+const credentialCorsOptions: CorsOptionsDelegate = (req, callback) => {
+  const requestOrigin = req.headers.origin;
+
+  if (!requestOrigin || !TRUSTED_ORIGINS.has(requestOrigin)) {
+    callback(new Error(`Origin not allowed for credentialed requests: ${requestOrigin}`));
+    return;
+  }
+
+  callback(null, {
+    origin: requestOrigin,
+    credentials: true, // sets Access-Control-Allow-Credentials: true
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Authorization', 'Content-Type'],
+    maxAge: 3600,
+  });
+};
+
+app.use(cors(credentialCorsOptions));
+```
+
+> **Never set `credentials: true` with `origin: '*'`** — browsers reject this combination. The `cors` package does not prevent you from doing it; it is your responsibility to enforce the rule.
+
+---
+
+## Environment-Aware Configuration
+
+Load the origin whitelist from environment variables so production, staging, and development each have their own policy without code changes.
+
+```typescript
+// config/cors.ts
+import { CorsOptionsDelegate } from 'cors';
+
+function buildAllowedOrigins(): Set<string> {
+  const raw = process.env.CORS_ALLOWED_ORIGINS ?? '';
+  const origins = raw
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  if (origins.length === 0 && process.env.NODE_ENV === 'production') {
+    throw new Error('CORS_ALLOWED_ORIGINS must be set in production');
+  }
+
+  return new Set(origins);
+}
+
+const allowedOrigins = buildAllowedOrigins();
+
+export const corsConfig: CorsOptionsDelegate = (req, callback) => {
+  const requestOrigin = req.headers.origin;
+
+  // In development with no whitelist configured, allow all origins
+  if (process.env.NODE_ENV !== 'production' && allowedOrigins.size === 0) {
+    callback(null, { origin: true });
+    return;
+  }
+
+  if (!requestOrigin || !allowedOrigins.has(requestOrigin)) {
+    callback(new Error(`Origin not allowed: ${requestOrigin ?? '(none)'}`));
+    return;
+  }
+
+  callback(null, {
+    origin: requestOrigin,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Authorization', 'Content-Type', 'X-Request-ID'],
+    exposedHeaders: ['X-Request-ID'],
+    maxAge: 86400,
+  });
+};
+```
+
+**`.env.production`:**
+```
+CORS_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com
+```
+
+**`app.ts`:**
+```typescript
+import { corsConfig } from './config/cors';
+
+app.use(cors(corsConfig));
+app.options('*', cors(corsConfig)); // explicit preflight handler for all routes
+```
+
+---
+
+## Preflight Handler
+
+Express requires an explicit `OPTIONS` handler for preflighted routes. Apply it globally before your routes.
+
+```typescript
+import cors from 'cors';
+import { corsConfig } from './config/cors';
+
+const app = express();
+
+// Handle preflight requests for all routes
+app.options('*', cors(corsConfig));
+
+// Apply CORS to all other requests
+app.use(cors(corsConfig));
+
+// Your routes go here
+app.get('/api/users', (req, res) => { /* ... */ });
+```
+
+Without the `app.options('*', ...)` line, browsers will receive a `404` on preflight and block the actual request.
+
+---
+
+## Edge Cases and Error Handling
+
+### Missing `Origin` header (non-browser clients)
+
+curl, server-to-server calls, and some mobile clients do not send an `Origin` header. CORS headers on the response have no effect for these — the browser is not involved. Your CORS config does not need to handle this case; just let the request through normally.
+
+```typescript
+// The cors package handles this automatically — requests without Origin are passed through.
+// You do not need to special-case this.
+```
+
+### Blocked origin — return a clear error
+
+When an origin is rejected, return a structured error so API clients can debug.
+
+```typescript
+app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err.message.startsWith('Origin not allowed')) {
+    res.status(403).json({
+      error: 'cors_origin_not_allowed',
+      message: 'This origin is not permitted to access this API.',
+    });
+    return;
+  }
+  next(err);
+});
+```
+
+### Exposing custom response headers
+
+By default, browsers can only read a small set of "safe" response headers (like `Content-Type`). To expose custom headers to browser JavaScript, list them explicitly.
+
+```typescript
+callback(null, {
+  origin: requestOrigin,
+  exposedHeaders: ['X-Request-ID', 'X-RateLimit-Remaining', 'X-RateLimit-Reset'],
+});
+```
