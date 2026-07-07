@@ -1,0 +1,324 @@
+---
+sidebar_position: 2
+title: Phone Number Standards
+description: Engineering guide for storing, validating, and formatting phone numbers across all systems using the E.164 standard.
+author: CTO
+tags: [standards, phone-numbers, e164, sms, validation, typescript]
+---
+
+# Phone Number Standards
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> This is not a suggestion. Every system that touches a phone number must follow this guide.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: E.164](#the-standard-e164)
+3. [Official Tooling](#official-tooling)
+4. [TypeScript Implementation](#typescript-implementation)
+5. [Database Best Practices](#database-best-practices)
+6. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+Phone numbers look simple. They are not.
+
+Users enter numbers in dozens of formats. Every country has different rules. Telephony providers like Twilio are strict. When we get this wrong, real things break.
+
+### What Goes Wrong Without a Standard
+
+**SMS delivery fails silently.**
+Twilio and other providers only accept E.164 format. A number stored as `(415) 555-0100` will not send. The API call will fail or be silently dropped. The user never receives the message and we have no idea why.
+
+**Costs increase.**
+Duplicate records are created when the same number is stored in multiple formats (`+14155550100`, `415-555-0100`, `14155550100`). We send duplicate SMS messages and pay for each one. Deduplication queries become expensive or impossible.
+
+**Database indexes break.**
+A `UNIQUE` index on a phone column only works if the data is normalized. If `+14155550100` and `14155550100` are both in the database, we have a data integrity problem that is very hard to fix retroactively.
+
+**Downstream systems fail in unexpected ways.**
+Analytics, CRM exports, compliance reports — all of these assume a consistent format. Mixed formats cause silent data corruption at reporting time, not at write time. By the time we notice, the damage is widespread.
+
+> **Architectural warning:** Data normalization bugs are write-time bugs with read-time symptoms. Every day we delay enforcement is more corrupted records to clean up.
+
+---
+
+## The Standard: E.164
+
+We store all phone numbers in **E.164 format**.
+
+E.164 is the international telephone numbering standard defined by the ITU. It is the format that all major telephony APIs (Twilio, Vonage, AWS SNS) require natively.
+
+### Format Rules
+
+```
++[Country Code][Area Code][Subscriber Number]
+```
+
+| Component | Description | Example |
+|---|---|---|
+| `+` | Mandatory prefix | `+` |
+| Country Code | 1–3 digits, identifies the country | `1` (US), `44` (UK), `52` (Mexico) |
+| Area Code | Regional identifier (length varies by country) | `415` |
+| Subscriber Number | Local number (length varies by country) | `5550100` |
+| **Full Example** | | `+14155550100` |
+
+### What "Clean String" Means
+
+We store the number **as a plain string with no spaces, hyphens, parentheses, or any other formatting characters.**
+
+| User Input | Stored Value |
+|---|---|
+| `(415) 555-0100` | `+14155550100` |
+| `415-555-0100` | `+14155550100` |
+| `+1 415 555 0100` | `+14155550100` |
+| `001 415 555 0100` | `+14155550100` |
+| `+44 20 7946 0958` | `+442079460958` |
+| `+52 55 1234 5678` | `+525512345678` |
+
+> **Rule:** We normalize at write time. We never store raw user input as the canonical phone number.
+
+---
+
+## Official Tooling
+
+For all Node.js and TypeScript projects, the official package is:
+
+### [`awesome-phonenumber`](https://www.npmjs.com/package/awesome-phonenumber)
+
+```bash
+npm install awesome-phonenumber
+```
+
+**Why this package:**
+
+- Pure TypeScript with full type definitions — no separate `@types` needed.
+- Wraps Google's `libphonenumber` — the same library used by Android, Google Maps, and most major telecom APIs.
+- Lightweight and tree-shakeable.
+- Handles parsing, validation, and formatting in one API.
+- No runtime dependencies.
+
+Do not use `google-libphonenumber` directly. Do not write custom regex validators. Do not use `phone`, `libphonenumber-js`, or other alternatives without discussing with the platform team first.
+
+---
+
+## TypeScript Implementation
+
+### Installation & Import
+
+```typescript
+import { parsePhoneNumber } from 'awesome-phonenumber';
+```
+
+### Parsing User Input
+
+User input is always messy. Parse it before you do anything else.
+
+```typescript
+import { parsePhoneNumber } from 'awesome-phonenumber';
+
+function parseUserInput(rawInput: string, defaultRegion = 'US') {
+  // Pass the default region so local numbers (without country code) resolve correctly.
+  return parsePhoneNumber(rawInput, { regionCode: defaultRegion });
+}
+
+const pn = parseUserInput('(415) 555-0100');
+console.log(pn.valid);          // true
+console.log(pn.number?.e164);   // '+14155550100'
+```
+
+> **Always pass a `regionCode` default** when users are in a known country. Without it, local numbers (without `+` prefix) may fail to parse.
+
+### Validation
+
+Check two things before persisting: is the number valid, and is it mobile (for SMS)?
+
+```typescript
+import { parsePhoneNumber } from 'awesome-phonenumber';
+
+interface PhoneValidationResult {
+  valid: boolean;
+  isMobile: boolean;
+  e164: string | null;
+  error?: string;
+}
+
+function validatePhoneNumber(
+  rawInput: string,
+  regionCode = 'US'
+): PhoneValidationResult {
+  const pn = parsePhoneNumber(rawInput, { regionCode });
+
+  if (!pn.valid) {
+    return {
+      valid: false,
+      isMobile: false,
+      e164: null,
+      error: 'Invalid phone number',
+    };
+  }
+
+  const isMobile = pn.typeIsMobile ?? false;
+
+  return {
+    valid: true,
+    isMobile,
+    e164: pn.number?.e164 ?? null,
+  };
+}
+```
+
+**Usage:**
+
+```typescript
+const result = validatePhoneNumber('+44 20 7946 0958', 'GB');
+console.log(result.valid);    // true
+console.log(result.isMobile); // false (UK landline)
+console.log(result.e164);     // '+442079460958'
+
+const smsResult = validatePhoneNumber('+1 415 555 0100', 'US');
+console.log(smsResult.isMobile); // true
+```
+
+> **Architectural warning:** If you are sending an SMS, check `isMobile` first. Sending SMS to a landline wastes money and may cause errors on some carriers. Some providers charge for failed deliveries.
+
+### Formatting to E.164 Before Persistence
+
+This is the critical step. Call this function before any `INSERT` or `UPDATE` to a phone number column.
+
+```typescript
+import { parsePhoneNumber } from 'awesome-phonenumber';
+
+/**
+ * Normalizes a raw phone number string to E.164 format.
+ * Throws if the input is not a valid phone number.
+ */
+function toE164(rawInput: string, regionCode = 'US'): string {
+  const pn = parsePhoneNumber(rawInput, { regionCode });
+
+  if (!pn.valid || !pn.number?.e164) {
+    throw new Error(`Invalid phone number: "${rawInput}"`);
+  }
+
+  return pn.number.e164;
+}
+
+// Before saving to the database:
+const normalized = toE164('(415) 555-0100'); // '+14155550100'
+await db.users.update({ id: userId, phoneNumber: normalized });
+```
+
+> **Never save raw user input.** Always call `toE164` before persistence. If the input is invalid, surface the error to the user at the API boundary — do not save a null or the raw string as a fallback.
+
+### Full Validation + Persistence Flow
+
+```typescript
+import { parsePhoneNumber } from 'awesome-phonenumber';
+
+async function updateUserPhoneNumber(
+  userId: string,
+  rawPhoneInput: string,
+  regionCode = 'US'
+): Promise<void> {
+  const pn = parsePhoneNumber(rawPhoneInput, { regionCode });
+
+  // 1. Validate
+  if (!pn.valid) {
+    throw new BadRequestError('Please enter a valid phone number.');
+  }
+
+  // 2. Check for mobile if this number will receive SMS
+  if (!pn.typeIsMobile) {
+    throw new BadRequestError('Please enter a mobile phone number to receive SMS.');
+  }
+
+  // 3. Normalize
+  const e164 = pn.number!.e164;
+
+  // 4. Persist
+  await db.users.update({ id: userId, phoneNumber: e164 });
+}
+```
+
+---
+
+## Database Best Practices
+
+### Column Type
+
+Store phone numbers as `VARCHAR(20)` or equivalent string type in your database.
+
+| Decision | Recommendation |
+|---|---|
+| **Type** | `VARCHAR(20)` or `TEXT` |
+| **Length** | 20 characters — E.164 max is 15 digits + `+` prefix, 20 gives safe headroom |
+| **Nullable** | Only if phone is optional for the entity |
+| **Default** | No default — `NULL` is better than an empty string |
+| **Encoding** | Plain ASCII — E.164 numbers only use `+` and digits |
+
+> Do not use `INTEGER` or `BIGINT` for phone numbers. The `+` prefix is not numeric. Leading zeros in some country codes are significant. Arithmetic on phone numbers is meaningless and dangerous.
+
+### Indexes
+
+Always apply an index on columns used for lookups.
+
+```sql
+-- Unique index: one user, one phone number
+CREATE UNIQUE INDEX idx_users_phone_number ON users (phone_number);
+
+-- Non-unique index: lookup by phone without uniqueness constraint
+CREATE INDEX idx_events_phone_number ON events (phone_number);
+```
+
+For partial indexes (e.g., only indexed when not null):
+
+```sql
+-- PostgreSQL
+CREATE UNIQUE INDEX idx_users_phone_number
+  ON users (phone_number)
+  WHERE phone_number IS NOT NULL;
+```
+
+Because E.164 is a normalized string, **string equality lookups (`WHERE phone_number = '+14155550100'`) are fast and index-friendly.** This is the main reason we normalize before storing — mixed formats make indexes useless.
+
+### Migration Notes for Existing Dirty Data
+
+If you are migrating an existing column with mixed formats, do not do it inline. Create a migration plan and discuss with the data team. The general approach:
+
+1. Add a new column `phone_number_e164 VARCHAR(20)`.
+2. Backfill using a migration script that calls `toE164` per row.
+3. Validate all rows were successfully converted (log failures).
+4. Rename columns once the backfill is verified.
+5. Apply the index.
+6. Drop the old column in a separate migration.
+
+Never backfill and drop in the same migration. It is not reversible.
+
+---
+
+## Quick Reference
+
+```
+✅  Store as: +14155550100
+❌  Never store: (415) 555-0100  |  415-555-0100  |  4155550100  |  1 415 555 0100
+```
+
+| Task | How |
+|---|---|
+| Parse user input | `parsePhoneNumber(raw, { regionCode: 'US' })` |
+| Check validity | `pn.valid === true` |
+| Check if mobile (SMS) | `pn.typeIsMobile === true` |
+| Get E.164 string | `pn.number?.e164` |
+| Throw on invalid | Wrap in `toE164()`, throw `BadRequestError` |
+| Store in DB | `VARCHAR(20)`, index the column |
+
+**Package:** [`awesome-phonenumber`](https://www.npmjs.com/package/awesome-phonenumber) — the only approved library for phone number handling in Node.js/TypeScript services.
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
