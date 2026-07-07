@@ -1,0 +1,6 @@
+# https://github.com/github/linguist/blob/master/docs/overrides.md#using-gitattributes
+babel.config.js linguist-vendored
+eslint.config.mjs linguist-vendored
+package-lock.json linguist-generated
+*.mdx linguist-vendored
+*.css linguist-vendored
