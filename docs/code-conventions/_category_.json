@@ -1,0 +1,8 @@
+{
+  "label": "Code Conventions",
+  "position": 5,
+  "link": {
+    "type": "generated-index",
+    "description": "Engineering conventions and standards for writing consistent, maintainable code across the codebase."
+  }
+}

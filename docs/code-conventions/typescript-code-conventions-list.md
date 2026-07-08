@@ -1,3 +1,11 @@
+---
+sidebar_position: 1
+title: TypeScript Code Conventions
+description: Section outline for TypeScript code conventions — naming, types, strict mode, generics, async patterns, and project structure standards.
+tags: [standards, typescript, conventions, code-style]
+---
+
+
 # TypeScript Code Conventions — Section Outline
 
 1. **Naming Conventions**

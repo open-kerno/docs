@@ -1,3 +1,10 @@
+---
+sidebar_position: 2
+title: TypeScript Code Conventions
+description: Full TypeScript coding standards — naming, type system, strict mode, generics, enums, functions, modules, async/error handling, and project structure.
+tags: [standards, typescript, conventions, code-style]
+---
+
 # TypeScript Code Conventions
 
 This document defines the TypeScript coding rules and preferences I follow. It is intended to instruct an AI assistant to generate code that matches these standards precisely.
