@@ -1,0 +1,218 @@
+---
+sidebar_position: 2
+title: Date and Time Management
+description: Engineering guide for storing dates in UTC and communicating them using the ISO 8601 standard across all systems.
+author: CTO
+tags: [standards, datetime, utc, iso8601, timezones]
+---
+
+# Date and Time Management
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> Every date and time value in our systems must follow one rule: store in UTC, communicate in ISO 8601. No exceptions.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: UTC + ISO 8601](#the-standard-utc--iso-8601)
+3. [Official Tooling](#official-tooling)
+4. [Database and Storage Rules](#database-and-storage-rules)
+5. [API and Communication Rules](#api-and-communication-rules)
+6. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+Date and time bugs are invisible until they are catastrophic. They hide in production for months, then surface as billing errors, missed notifications, or corrupted audit logs.
+
+### Ambiguous storage causes data corruption
+
+**Timestamps stored without timezone information are broken by design.**
+If you store `2024-03-10 02:30:00` in a database column with no timezone, that value means nothing. Is it UTC? Is it the server's local time? Is it the user's local time? Different developers and different systems will read it differently. The result is silent data corruption — queries return wrong results, date comparisons fail across regions, and exports produce nonsense.
+
+### Inconsistent formats break integrations
+
+**APIs that return dates in multiple formats fail silently.**
+If one endpoint returns `2024-03-10`, another returns `March 10, 2024`, and a third returns `1710028800`, every consumer must guess the format. Parsing guesses are wrong under edge cases: month-first vs. day-first confusion (`03/04` is March 4th or April 3rd depending on locale), two-digit years, and missing timezone offsets. Integration bugs from date format inconsistency are among the most common and most expensive defects we see.
+
+### Timezone logic does not belong in storage
+
+**Storing dates in local time transfers complexity to every reader.**
+If timestamps are stored in the application server's local timezone, every query, every migration, every new service, and every analytics tool must know which timezone the data was stored in — and must convert correctly. When the server moves regions, or when daylight saving time shifts, stored data becomes untrustworthy. UTC is the universal reference point. Convert to local time only at display time, on the client.
+
+> **Architectural warning:** The time zone a user is in is a display concern. It is not a storage concern. Storing timestamps in user-local time or server-local time is a design defect that cannot be fixed without a data migration.
+
+---
+
+## The Standard: UTC + ISO 8601
+
+### What we use
+
+| Concern | Standard | Notes |
+|---|---|---|
+| **Storage** | UTC | All timestamps stored in UTC, always |
+| **API format** | ISO 8601 | `YYYY-MM-DDTHH:mm:ss.sssZ` |
+| **Date only** | ISO 8601 date | `YYYY-MM-DD` |
+| **Time only** | ISO 8601 time | `HH:mm:ss` |
+| **Timezone offset** | UTC suffix | Always `Z` or explicit offset like `+00:00` |
+
+### ISO 8601 format rules
+
+| Component | Format | Example |
+|---|---|---|
+| Date | `YYYY-MM-DD` | `2024-03-10` |
+| Time | `HH:mm:ss` | `14:30:00` |
+| Milliseconds (optional) | `.sss` | `14:30:00.000` |
+| UTC suffix | `Z` | `2024-03-10T14:30:00.000Z` |
+| Explicit offset | `±HH:mm` | `2024-03-10T14:30:00+05:30` |
+| Full UTC datetime | Combined | `2024-03-10T14:30:00.000Z` |
+
+### Before and after
+
+| Input (raw / wrong) | Normalized (correct) |
+|---|---|
+| `March 10, 2024` | `2024-03-10` |
+| `03/10/2024` | `2024-03-10` |
+| `10-03-2024` | `2024-03-10` |
+| `1710028800` (Unix epoch) | `2024-03-10T02:40:00.000Z` |
+| `2024-03-10 14:30:00` (no timezone) | `2024-03-10T14:30:00.000Z` |
+| `2024-03-10T14:30:00+05:30` (local offset) | `2024-03-10T09:00:00.000Z` (converted to UTC for storage) |
+
+---
+
+## Official Tooling
+
+Use **`date-fns`** for all date manipulation in TypeScript/JavaScript.
+
+```bash
+npm install date-fns
+```
+
+- Pure functions — no mutation, no global state.
+- Tree-shakeable — only the functions you import are bundled.
+- Explicit timezone handling via `date-fns-tz` for conversion at display time.
+- No prototype pollution (unlike `moment.js`).
+- Well-maintained, widely adopted, typed out of the box.
+
+**Do not use:**
+- `moment.js` — deprecated, large bundle size, mutable API.
+- `Date.toString()` or `Date.toLocaleString()` — locale-dependent output, not ISO 8601.
+- Manual string formatting — error-prone, not timezone-aware.
+- Storing Unix timestamps as integers without documentation — integers have no inherent timezone semantics.
+
+---
+
+## Database and Storage Rules
+
+### Column types
+
+| Database | Column type | Notes |
+|---|---|---|
+| PostgreSQL | `TIMESTAMPTZ` | Stores in UTC internally, preserves offset on write |
+| PostgreSQL (date only) | `DATE` | No time, no timezone — only for calendar dates |
+| MySQL / MariaDB | `DATETIME` + application-level UTC enforcement | `TIMESTAMP` has year-2038 limit; use `DATETIME` and always write UTC |
+| SQLite | `TEXT` or `INTEGER` | Store ISO 8601 string or Unix epoch; document the choice |
+
+> **Always use `TIMESTAMPTZ` in PostgreSQL.** Never use `TIMESTAMP WITHOUT TIME ZONE` for application data. It stores values without timezone context and returns whatever the session timezone is set to — which is a source of silent bugs when the session timezone changes.
+
+### Prisma schema
+
+```prisma
+model Event {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt    @db.Timestamptz(3)
+  startsAt  DateTime               @db.Timestamptz(3)
+}
+```
+
+`@default(now())` writes the current time in UTC. `@db.Timestamptz(3)` maps to PostgreSQL's `TIMESTAMPTZ` with millisecond precision.
+
+### Application-level rule
+
+Always create `Date` objects in UTC. Never use `new Date()` from a local-time string without an explicit UTC offset.
+
+```typescript
+// ✅ Correct — explicit UTC offset
+const eventDate = new Date('2024-03-10T14:30:00.000Z');
+
+// ❌ Wrong — browser/server may interpret as local time
+const eventDate = new Date('2024-03-10 14:30:00');
+```
+
+---
+
+## API and Communication Rules
+
+### Request and response format
+
+All date and time values in JSON payloads must be ISO 8601 strings with UTC timezone.
+
+```json
+{
+  "createdAt": "2024-03-10T14:30:00.000Z",
+  "scheduledFor": "2024-03-15T09:00:00.000Z",
+  "birthDate": "1990-07-22"
+}
+```
+
+**Never return:**
+- Unix timestamps as bare integers (no timezone context for readers).
+- Locale-formatted strings (`"March 10, 2024"`, `"10/03/24"`).
+- Timezone-naive strings (`"2024-03-10T14:30:00"` — missing the `Z`).
+
+### Accepting dates from clients
+
+When an API receives a date from a client, always:
+1. Parse it as ISO 8601.
+2. Validate it is a valid date.
+3. Normalize it to UTC before storing.
+
+If the client sends a local-time string with an offset (e.g., `2024-03-10T09:00:00+05:30`), convert it to UTC before writing to the database. Store `2024-03-10T03:30:00.000Z`, not the original offset string.
+
+### Display time conversion
+
+Convert UTC to local time only at the presentation layer — in the browser or mobile app. Never store converted-local-time values back to the database.
+
+```typescript
+// Server: always store and return UTC
+const utcDate = new Date('2024-03-10T14:30:00.000Z');
+
+// Client: convert to user's local timezone for display only
+const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const localDisplay = utcDate.toLocaleString('en-US', { timeZone: userTimezone });
+```
+
+---
+
+## Quick Reference
+
+```
+✅  Store:      UTC only — TIMESTAMPTZ in Postgres, DateTime in UTC in Prisma
+✅  Format:     ISO 8601 — "2024-03-10T14:30:00.000Z"
+✅  Parse:      Validate format and timezone on every API input
+✅  Display:    Convert to local time on the client, never on the server
+
+❌  Never store local time or server time — always normalize to UTC first
+❌  Never return bare Unix integers — always return ISO 8601 strings
+❌  Never use moment.js — use date-fns
+❌  Never use TIMESTAMP WITHOUT TIME ZONE in PostgreSQL
+❌  Never format dates with toLocaleString() in API responses
+```
+
+| Task | How to do it |
+|---|---|
+| Get current UTC time | `new Date().toISOString()` |
+| Parse an ISO 8601 string | `new Date('2024-03-10T14:30:00.000Z')` |
+| Format a date for the API | `date.toISOString()` |
+| Add days to a date | `addDays(date, 7)` from `date-fns` |
+| Convert UTC to local for display | `toLocaleString()` with `timeZone` option on the client |
+| Validate an ISO 8601 input | `isValid(parseISO(input))` from `date-fns` |
+| Store in Postgres | `TIMESTAMPTZ` column — see [TypeScript Implementation](./typescript-implementation) |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
