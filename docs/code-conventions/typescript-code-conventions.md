@@ -871,27 +871,45 @@ return user;
 
 ### Folder Organization
 
-- Organize by feature/domain, not by type. Avoid flat `controllers/`, `services/`, `models/` directories at the top level.
+Follow **Hexagonal Architecture (Ports & Adapters)**. Business logic is completely isolated from infrastructure — the `domain` layer never imports from `infrastructure`.
 
 ```
 src/
-  users/
-    user.types.ts
-    user-repository.ts
-    user-service.ts
-    user.test.ts
-    index.ts
-  orders/
-    ...
+  domain/                         # Pure entities and business rules
+    user/
+      user.entity.ts
+      user.repository.interface.ts
+  application/                    # Use cases — orchestration only
+    user/
+      create-user.use-case.ts
+  infrastructure/                 # Real implementations (DB, HTTP, third-party)
+    database/
+      postgres-user.repository.ts
+    http/
+      express-user.controller.ts
 ```
 
 ### Module Boundaries
 
-- Each feature folder owns its domain. Cross-feature access goes through the public `index.ts`. No feature directly imports from another feature's internals.
+- `domain` has zero external dependencies — no framework, no ORM, no HTTP library.
+- `application` depends only on `domain` interfaces, never on `infrastructure` directly.
+- `infrastructure` is the only layer allowed to import external packages and implement domain interfaces.
 
-### Co-location Rules
+### Test Structure
 
-- Keep tests, types, and helpers next to the code they support. Do not have a top-level `__tests__` folder — tests live beside their source.
+Separate tests by type, not co-located with source. Use a top-level `tests/` folder organized by test category:
+
+```
+tests/
+  unit/
+    user/
+      create-user.use-case.test.ts
+  integration/
+    user/
+      postgres-user.repository.test.ts
+  e2e/
+    create-user.e2e.test.ts
+```
 
 ---
 
