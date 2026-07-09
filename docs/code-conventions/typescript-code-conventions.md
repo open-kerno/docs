@@ -80,7 +80,7 @@ type user_id = string;
 ```typescript
 // ✅ Do
 enum Direction { North = "North", South = "South" }
-enum StatusCode { Ok = 200, NotFound = 404 }
+enum StatusCode { OK = 200, NOT_FOUND = 404 }
 
 // ❌ Don't
 enum direction { north = "north" }
@@ -384,9 +384,14 @@ abstract class BaseRepository<T> {
 
 ```typescript
 // ✅ Do
-interface Logger { log(message: string): void; }
-class ConsoleLogger implements Logger {
-  log(message: string): void { console.log(message); }
+interface Notifier {
+  send(to: string, message: string): Promise<void>;
+}
+
+class EmailNotifier implements Notifier {
+  async send(to: string, message: string): Promise<void> {
+    await sendEmail({ to, body: message });
+  }
 }
 ```
 
