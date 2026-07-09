@@ -752,11 +752,11 @@ const port = config.port || 3000; // falsy on port 0
 
 ```typescript
 // ✅ Do — justified with comment
-const canvas = document.getElementById("canvas") as HTMLCanvasElement;
-// We control the HTML and this element is always present on this page.
+// Map is populated from DB rows; every userId is guaranteed to exist by the JOIN.
+const user = userMap.get(userId) as User;
 
 // ❌ Don't
-const canvas = document.getElementById("canvas")!; // hides a potential null
+const user = userMap.get(userId)!; // hides a potential undefined
 ```
 
 ---
@@ -948,15 +948,19 @@ const sdk: any = legacyInit();
 
 ### Type-Safe Test Utilities
 
-- Use typed factory functions to create test fixtures. Avoid raw object literals spread across tests — they break silently when types change.
+- Use typed factory functions with `@faker-js/faker` defaults to create test fixtures. Avoid raw object literals spread across tests — they break silently when types change.
+- Override only the properties relevant to each test; let factories handle the rest.
 
 ```typescript
-// ✅ Do
-function buildUser(overrides: Partial<User> = {}): User {
-  return { id: 'test-id', name: 'Alice', role: 'viewer', ...overrides };
-}
+// ✅ Do — factory with faker defaults
+export const userExample = ({
+  id = faker.string.uuid(),
+  name = faker.person.fullName(),
+  role = faker.helpers.objectValue(UserRoleEnum),
+} = {}): User => ({ id, name, role });
 
-const user = buildUser({ role: 'admin' });
+// Usage — override only what the test cares about
+const admin = userExample({ role: 'admin' });
 ```
 
 ### Mocking Typed Dependencies
@@ -973,11 +977,11 @@ const mockRepo: jest.Mocked<UserRepository> = {
 
 ### Asserting Types in Tests
 
-- Use `expectTypeOf` (via `vitest`) or `tsd` to assert type-level correctness in addition to runtime behavior.
+- Use `expectTypeOf` (via `expect-type`) to assert type-level correctness in addition to runtime behavior.
 
 ```typescript
 // ✅ Do
-import { expectTypeOf } from 'vitest';
+import { expectTypeOf } from 'expect-type';
 
 expectTypeOf(findUser('1')).toEqualTypeOf<Promise<User | null>>();
 ```
