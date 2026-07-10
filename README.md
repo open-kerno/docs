@@ -13,13 +13,13 @@
 ### Installation
 
 ```bash
-npm install
+bun install
 ```
 
 ### Local Development
 
 ```bash
-npm start
+bun run start
 ```
 
 Starts a local development server and opens a browser window. Most changes are reflected live without restarting.
@@ -27,7 +27,7 @@ Starts a local development server and opens a browser window. Most changes are r
 ### Build
 
 ```bash
-npm run build
+bun run build
 ```
 
 Generates static content into the `build/` directory, ready to be served by any static hosting service.
@@ -36,8 +36,8 @@ Generates static content into the `build/` directory, ready to be served by any 
 
 ```bash
 # With SSH
-USE_SSH=true npm run deploy
+USE_SSH=true bun run deploy
 
 # Without SSH
-GIT_USER=<your-github-username> npm run deploy
+GIT_USER=<your-github-username> bun run deploy
 ```
