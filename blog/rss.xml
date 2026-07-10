@@ -2,7 +2,7 @@
 <rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/">
     <channel>
         <title>Open Kerno Docs Blog</title>
-        <link>https://open-kerno.github.io/blog</link>
+        <link>https://open-kerno.github.io/docs/blog</link>
         <description>Open Kerno Docs Blog</description>
         <lastBuildDate>Tue, 07 Jul 2026 00:00:00 GMT</lastBuildDate>
         <docs>https://validator.w3.org/feed/docs/rss2.html</docs>
@@ -10,21 +10,21 @@
         <language>en</language>
         <item>
             <title><![CDATA[Welcome to the Kerno Engineering Blog]]></title>
-            <link>https://open-kerno.github.io/blog/welcome-to-the-eng-blog</link>
-            <guid>https://open-kerno.github.io/blog/welcome-to-the-eng-blog</guid>
+            <link>https://open-kerno.github.io/docs/blog/welcome-to-the-eng-blog</link>
+            <guid>https://open-kerno.github.io/docs/blog/welcome-to-the-eng-blog</guid>
             <pubDate>Tue, 07 Jul 2026 00:00:00 GMT</pubDate>
             <description><![CDATA[We started this blog to share what we learn as we build Kerno.]]></description>
             <content:encoded><![CDATA[<p>We started this blog to share what we learn as we build Kerno.</p>
 <!-- -->
 <p>We will write about technical decisions, tools we use, and problems we solve. Some posts will be short. Others will go deep into a specific topic.</p>
 <p>We are a small team moving fast. Not every decision we make is perfect, but we try to be thoughtful about the things that are hard to change later — like data formats, API contracts, and system boundaries.</p>
-<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="what-to-expect">What to expect<a href="https://open-kerno.github.io/blog/welcome-to-the-eng-blog#what-to-expect" class="hash-link" aria-label="Direct link to What to expect" title="Direct link to What to expect" translate="no">​</a></h2>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="what-to-expect">What to expect<a href="https://open-kerno.github.io/docs/blog/welcome-to-the-eng-blog#what-to-expect" class="hash-link" aria-label="Direct link to What to expect" title="Direct link to What to expect" translate="no">​</a></h2>
 <ul>
 <li class=""><strong>Engineering standards</strong> — How we handle data, naming, and consistency across services.</li>
 <li class=""><strong>Incident reviews</strong> — What broke, why, and what we changed.</li>
 <li class=""><strong>Tool evaluations</strong> — What we tried, what we kept, and what we dropped.</li>
 </ul>
-<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="who-writes-here">Who writes here<a href="https://open-kerno.github.io/blog/welcome-to-the-eng-blog#who-writes-here" class="hash-link" aria-label="Direct link to Who writes here" title="Direct link to Who writes here" translate="no">​</a></h2>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="who-writes-here">Who writes here<a href="https://open-kerno.github.io/docs/blog/welcome-to-the-eng-blog#who-writes-here" class="hash-link" aria-label="Direct link to Who writes here" title="Direct link to Who writes here" translate="no">​</a></h2>
 <p>Anyone on the engineering team can publish here. Posts go through a light review before they are published. The goal is to share real context, not polished marketing content.</p>
 <p>If you are on the team and want to write something, open a PR against this repo.</p>
 <hr>
