@@ -280,6 +280,31 @@ export default function Home(): ReactNode {
       <Head>
         <title>Open Kerno | Backend Essentials for MVPs</title>
         <meta name="description" content="Shared core utilities, base configurations, and essential building blocks for open-kerno projects." />
+        <style>{`
+          .okc-page {
+            background-color: #000000;
+            color: #FFFFFF;
+            -webkit-font-smoothing: antialiased;
+          }
+          .okc-page .bg-grid {
+            background-size: 40px 40px;
+            background-image: linear-gradient(to right, rgba(0, 58, 140, 0.15) 1px, transparent 1px),
+                              linear-gradient(to bottom, rgba(0, 58, 140, 0.15) 1px, transparent 1px);
+            mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+            -webkit-mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+          }
+          .okc-page .text-ribbon {
+            background: linear-gradient(135deg, #0F62FE, #00D8F6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-shadow: 0px 4px 15px rgba(0, 58, 140, 0.5);
+          }
+          .okc-page::-webkit-scrollbar { width: 8px; }
+          .okc-page::-webkit-scrollbar-track { background: #000000; }
+          .okc-page::-webkit-scrollbar-thumb { background: #003A8C; border-radius: 4px; }
+          .okc-page::-webkit-scrollbar-thumb:hover { background: #0F62FE; }
+        `}</style>
       </Head>
 
       <div className="okc-page min-h-screen flex flex-col relative overflow-x-hidden selection:bg-okc-electric selection:text-okc-white">
