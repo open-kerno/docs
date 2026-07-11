@@ -98,6 +98,47 @@ function CmdBox({cmd}: {cmd: string}) {
 
 // ── Sections ────────────────────────────────────────────────────
 
+const DOCS_URL = 'https://open-kerno.github.io/commons-ts/docs';
+
+function DocsEmbed() {
+  return (
+    <div className="w-full max-w-5xl mx-auto mt-16">
+      {/* Browser chrome */}
+      <div className="bg-[#0a1628] border border-okc-electric/30 rounded-2xl overflow-hidden shadow-glow">
+        {/* Title bar */}
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-okc-electric/20 bg-[#050d1f]">
+          <div className="flex gap-1.5">
+            <span className="w-3 h-3 rounded-full bg-red-500/70" />
+            <span className="w-3 h-3 rounded-full bg-yellow-500/70" />
+            <span className="w-3 h-3 rounded-full bg-green-500/70" />
+          </div>
+          <div className="flex-1 flex items-center justify-center">
+            <div className="flex items-center gap-2 bg-okc-black/60 border border-okc-cobalt/40 rounded-lg px-3 py-1 text-xs font-mono text-okc-white/50 max-w-sm w-full justify-center">
+              <span className="text-okc-cyan/60">🔒</span>
+              {DOCS_URL}
+            </div>
+          </div>
+          <a href={DOCS_URL} target="_blank" rel="noopener noreferrer"
+            className="text-okc-white/40 hover:text-okc-cyan transition-colors text-xs font-medium whitespace-nowrap">
+            Open ↗
+          </a>
+        </div>
+        {/* iframe */}
+        <iframe
+          src={DOCS_URL}
+          title="Open Kerno Commons — API Documentation"
+          className="w-full border-0"
+          style={{height: '520px'}}
+          loading="lazy"
+        />
+      </div>
+      <p className="text-okc-white/30 text-xs text-center mt-3">
+        Full API reference for <code className="text-okc-cyan/70">@open-kerno/commons</code>
+      </p>
+    </div>
+  );
+}
+
 function Hero() {
   return (
     <section className="w-full pt-24 pb-20 md:pt-32 md:pb-28 px-4 flex flex-col items-center justify-center text-center">
@@ -119,10 +160,6 @@ function Hero() {
         <strong className="text-okc-white font-semibold">@open-kerno/commons</strong> provides the essential,
         robust TypeScript backend components so you can focus on building your product, not boilerplate.
       </p>
-
-      <div className="w-full max-w-md mx-auto mb-10">
-        <CmdBox cmd="npm install @open-kerno/commons" />
-      </div>
 
       <div className="flex flex-col sm:flex-row gap-4 items-center justify-center w-full">
         <Link to="/intro"
@@ -370,6 +407,15 @@ export default function Home(): ReactNode {
           <FeaturesSection />
           <CommonsSection />
           <AppsSection />
+          <section className="w-full py-20 px-4 border-t border-okc-cobalt/30 relative">
+            <div className="max-w-7xl mx-auto">
+              <div className="text-center mb-12">
+                <h2 className="text-3xl md:text-4xl font-bold mb-4">API Documentation</h2>
+                <p className="text-okc-white/60">Full reference for <code className="text-okc-cyan/80 bg-okc-cobalt/20 px-1.5 py-0.5 rounded text-sm">@open-kerno/commons</code></p>
+              </div>
+              <DocsEmbed />
+            </div>
+          </section>
         </main>
 
         <PageFooter />
