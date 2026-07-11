@@ -1,8 +1,51 @@
+@tailwind components;
+@tailwind utilities;
+
 /**
  * Any CSS included here will be global. The classic template
  * bundles Infima by default. Infima is a CSS framework designed to
  * work well for content-centric websites.
  */
+
+/* ── OKC global classes ──────────────────────────────────────── */
+
+.okc-page {
+  background-color: #000000;
+  color: #ffffff;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Strip Docusaurus link styling inside okc-page */
+.okc-page a {
+  text-decoration: none;
+}
+.okc-page a:hover {
+  text-decoration: none;
+}
+
+/* Gradient text effect used by the nav logo & hero title */
+.text-ribbon {
+  background: linear-gradient(135deg, #0f62fe, #00d8f6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Subtle grid background */
+.bg-grid {
+  background-size: 40px 40px;
+  background-image:
+    linear-gradient(to right, rgba(0, 58, 140, 0.15) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 58, 140, 0.15) 1px, transparent 1px);
+  mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+}
+
+/* Custom scrollbar */
+.okc-page::-webkit-scrollbar { width: 8px; }
+.okc-page::-webkit-scrollbar-track { background: #000000; }
+.okc-page::-webkit-scrollbar-thumb { background: #003a8c; border-radius: 4px; }
+.okc-page::-webkit-scrollbar-thumb:hover { background: #0f62fe; }
 
 /* You can override the default Infima variables here. */
 :root {
