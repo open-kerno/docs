@@ -7,6 +7,8 @@ import {
   Hexagon, Package,
   Copy, Check,
   FileCode2, Blocks, Zap,
+  Flag, Shield, Database, Globe, Cpu, Settings,
+  type LucideIcon,
 } from 'lucide-react';
 
 // lucide-react dropped the Github icon — use an inline SVG instead
@@ -43,13 +45,13 @@ const FEATURES = [
   {Icon: Zap, title: 'MVP Ready', desc: 'Skip the repetitive setup phase. Our battle-tested components are specifically designed to help startups and makers launch their APIs faster.'},
 ];
 
-const APPS = [
-  {name: 'weapon-x', description: 'Feature flags & remote config. A self-hosted Statsig alternative.', github: 'https://github.com/open-kerno/weapon-x', badge: 'Feature Flags'},
-  {name: 'app-mock-2', description: 'Placeholder application. Coming soon.', github: 'https://github.com/open-kerno'},
-  {name: 'app-mock-3', description: 'Placeholder application. Coming soon.', github: 'https://github.com/open-kerno'},
-  {name: 'app-mock-4', description: 'Placeholder application. Coming soon.', github: 'https://github.com/open-kerno'},
-  {name: 'app-mock-5', description: 'Placeholder application. Coming soon.', github: 'https://github.com/open-kerno'},
-  {name: 'app-mock-6', description: 'Placeholder application. Coming soon.', github: 'https://github.com/open-kerno'},
+const APPS: {name: string; description: string; github: string; badge?: string; Icon: LucideIcon; soon?: boolean}[] = [
+  {name: 'weapon-x', description: 'Feature flags & remote config. A self-hosted Statsig alternative.', github: 'https://github.com/open-kerno/weapon-x', badge: 'Live', Icon: Flag},
+  {name: 'auth-core', description: 'Lightweight authentication layer with JWT, refresh tokens, and role-based access control.', github: 'https://github.com/open-kerno', Icon: Shield, soon: true},
+  {name: 'data-vault', description: 'Encrypted key-value store for sensitive configuration and secrets management.', github: 'https://github.com/open-kerno', Icon: Database, soon: true},
+  {name: 'api-gateway', description: 'Minimal API gateway with rate limiting, request validation, and observability hooks.', github: 'https://github.com/open-kerno', Icon: Globe, soon: true},
+  {name: 'task-runner', description: 'Distributed background job processor built for reliability at scale.', github: 'https://github.com/open-kerno', Icon: Cpu, soon: true},
+  {name: 'config-hub', description: 'Centralized runtime configuration service with live reload and audit logs.', github: 'https://github.com/open-kerno', Icon: Settings, soon: true},
 ];
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -146,7 +148,7 @@ function FeaturesSection() {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 lg:gap-8">
           {FEATURES.map(({Icon, title, desc}) => (
-            <div key={title} className="bg-okc-black border border-okc-cobalt rounded-2xl p-8 hover:border-okc-electric/50 transition-all duration-300 group hover:-translate-y-1 transform">
+            <div key={title} className="bg-[#050d1f] border border-okc-electric/30 rounded-2xl p-8 shadow-glow hover:border-okc-electric/70 hover:shadow-glow-intense transition-all duration-300 group hover:-translate-y-1 transform">
               <div className="w-12 h-12 rounded-xl bg-gradient-ribbon p-0.5 mb-6 shadow-glow">
                 <div className="w-full h-full bg-okc-black rounded-[10px] flex items-center justify-center">
                   <Icon className="w-6 h-6 text-okc-cyan group-hover:text-okc-white transition-colors duration-300" />
@@ -223,22 +225,49 @@ function AppsSection() {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {APPS.map((app) => (
-            <div key={app.name} className="bg-okc-black border border-okc-cobalt rounded-2xl p-6 hover:border-okc-electric/50 transition-all duration-300 group hover:-translate-y-1 transform flex flex-col gap-3 relative overflow-hidden">
-              <div className="absolute -right-8 -top-8 w-24 h-24 bg-gradient-ribbon opacity-0 blur-xl group-hover:opacity-10 transition-opacity" />
-              {app.badge && (
-                <span className="self-start px-2.5 py-0.5 rounded-full bg-gradient-ribbon text-white text-xs font-bold uppercase tracking-widest">
-                  {app.badge}
-                </span>
-              )}
-              <p className="text-okc-white/70 text-sm font-mono">
-                open-kerno/<strong className="text-okc-white font-semibold">{app.name}</strong>
-              </p>
-              <p className="text-okc-white/50 text-sm leading-relaxed flex-1">{app.description}</p>
-              <a href={app.github} target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-1.5 text-okc-electric hover:text-okc-cyan text-sm font-medium transition-colors duration-200">
-                <Github className="w-4 h-4" />
-                View on GitHub
-              </a>
+            <div key={app.name} className="bg-[#050d1f] border border-okc-electric/30 rounded-2xl shadow-glow hover:border-okc-electric/70 hover:shadow-glow-intense transition-all duration-300 group hover:-translate-y-1 transform flex flex-col overflow-hidden relative">
+              {/* Top accent + ambient glow */}
+              <div className="h-0.5 w-full bg-gradient-ribbon flex-shrink-0" />
+              <div className="absolute -right-10 -top-10 w-32 h-32 bg-gradient-ribbon opacity-0 blur-2xl group-hover:opacity-15 transition-opacity pointer-events-none" />
+
+              <div className="p-6 flex flex-col gap-4 flex-1 relative">
+                {/* Header */}
+                <div className="flex items-start justify-between gap-2">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-ribbon p-0.5 shadow-glow flex-shrink-0">
+                    <div className="w-full h-full bg-[#050d1f] rounded-[9px] flex items-center justify-center">
+                      <app.Icon className="w-5 h-5 text-okc-cyan group-hover:text-okc-white transition-colors duration-300" />
+                    </div>
+                  </div>
+                  {app.badge && (
+                    <span className="px-2 py-0.5 rounded-full bg-gradient-ribbon text-white text-[10px] font-bold uppercase tracking-widest">
+                      {app.badge}
+                    </span>
+                  )}
+                  {app.soon && (
+                    <span className="px-2 py-0.5 rounded-full border border-okc-cobalt/60 text-okc-white/40 text-[10px] font-semibold uppercase tracking-widest">
+                      Coming soon
+                    </span>
+                  )}
+                </div>
+
+                {/* Name */}
+                <div>
+                  <p className="text-okc-white/40 text-xs font-mono mb-0.5">open-kerno/</p>
+                  <p className="text-okc-white font-bold text-lg leading-tight group-hover:text-transparent group-hover:bg-clip-text group-hover:bg-gradient-ribbon transition-all duration-300">
+                    {app.name}
+                  </p>
+                </div>
+
+                {/* Description */}
+                <p className="text-okc-white/55 text-sm leading-relaxed flex-1">{app.description}</p>
+
+                {/* Footer link */}
+                <a href={app.github} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 text-okc-electric hover:text-okc-cyan text-sm font-medium transition-colors duration-200 mt-1">
+                  <Github className="w-4 h-4" />
+                  View on GitHub
+                </a>
+              </div>
             </div>
           ))}
         </div>
