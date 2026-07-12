@@ -1,6 +1,5 @@
 {
-  "name": "temp-docs",
-  "version": "0.0.0",
+  "name": "@open-kerno/docs",
   "private": true,
   "scripts": {
     "docusaurus": "docusaurus",
