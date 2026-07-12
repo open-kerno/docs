@@ -42,10 +42,19 @@
 }
 
 /* Custom scrollbar */
-.okc-page::-webkit-scrollbar { width: 8px; }
-.okc-page::-webkit-scrollbar-track { background: #000000; }
-.okc-page::-webkit-scrollbar-thumb { background: #003a8c; border-radius: 4px; }
-.okc-page::-webkit-scrollbar-thumb:hover { background: #0f62fe; }
+.okc-page::-webkit-scrollbar {
+  width: 8px;
+}
+.okc-page::-webkit-scrollbar-track {
+  background: #000000;
+}
+.okc-page::-webkit-scrollbar-thumb {
+  background: #003a8c;
+  border-radius: 4px;
+}
+.okc-page::-webkit-scrollbar-thumb:hover {
+  background: #0f62fe;
+}
 
 /* You can override the default Infima variables here. */
 :root {
@@ -62,7 +71,7 @@
 }
 
 /* For readability concerns, you should choose a lighter palette in dark mode. */
-[data-theme='dark'] {
+[data-theme="dark"] {
   /* Kerno brand palette — Bright Cyan (#00D8F6) as primary for dark mode */
   --ifm-color-primary: #00d8f6;
   --ifm-color-primary-dark: #00c3de;

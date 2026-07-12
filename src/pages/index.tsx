@@ -1,22 +1,39 @@
-import type {ReactNode} from 'react';
-import {useState} from 'react';
 import Head from '@docusaurus/Head';
 import Link from '@docusaurus/Link';
 import clsx from 'clsx';
 import {
-  Hexagon, Package,
-  Copy, Check,
-  FileCode2, Blocks, Zap,
-  Flag, Shield, Database, Globe, Cpu, Settings,
+  Blocks,
+  Check,
+  Copy,
+  Cpu,
+  Database,
+  FileCode2,
+  Flag,
+  Globe,
+  Hexagon,
   type LucideIcon,
+  Package,
+  Settings,
+  Shield,
+  Zap,
 } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { useState } from 'react';
 
 // lucide-react dropped the Github icon — use an inline SVG instead
-function Github({className}: {className?: string}) {
+function Github({ className }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/>
-      <path d="M9 18c-4.51 2-5-2-7-2"/>
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4" />
+      <path d="M9 18c-4.51 2-5-2-7-2" />
     </svg>
   );
 }
@@ -25,56 +42,120 @@ function Github({className}: {className?: string}) {
 
 type Lang = 'nodejs' | 'go' | 'python' | 'rust';
 
-const LANGS: {id: Lang; label: string}[] = [
-  {id: 'nodejs', label: 'Node.js'},
-  {id: 'go', label: 'Go'},
-  {id: 'python', label: 'Python'},
-  {id: 'rust', label: 'Rust'},
+const LANGS: { id: Lang; label: string }[] = [
+  { id: 'nodejs', label: 'Node.js' },
+  { id: 'go', label: 'Go' },
+  { id: 'python', label: 'Python' },
+  { id: 'rust', label: 'Rust' },
 ];
 
-const COMMANDS: Record<Lang, {cmd: string; repo: string; file: string}> = {
-  nodejs: {cmd: 'npm install @open-kerno/commons', repo: 'github.com/open-kerno/commons-ts', file: 'package.json'},
-  go: {cmd: 'go get github.com/open-kerno/commons-go', repo: 'github.com/open-kerno/commons-go', file: 'go.mod'},
-  python: {cmd: 'pip install open-kerno-commons', repo: 'github.com/open-kerno/commons-py', file: 'current environment'},
-  rust: {cmd: 'cargo add open-kerno-commons', repo: 'github.com/open-kerno/commons-rs', file: 'Cargo.toml'},
+const COMMANDS: Record<Lang, { cmd: string; repo: string; file: string }> = {
+  nodejs: { cmd: 'npm install @open-kerno/commons', repo: 'github.com/open-kerno/commons-ts', file: 'package.json' },
+  go: { cmd: 'go get github.com/open-kerno/commons-go', repo: 'github.com/open-kerno/commons-go', file: 'go.mod' },
+  python: {
+    cmd: 'pip install open-kerno-commons',
+    repo: 'github.com/open-kerno/commons-py',
+    file: 'current environment',
+  },
+  rust: { cmd: 'cargo add open-kerno-commons', repo: 'github.com/open-kerno/commons-rs', file: 'Cargo.toml' },
 };
 
 const FEATURES = [
-  {Icon: FileCode2, title: 'TypeScript Native', desc: 'Written entirely in TypeScript with strict mode enabled. Enjoy flawless autocompletion, type safety, and robust internal interfaces out of the box.'},
-  {Icon: Blocks, title: 'Modular Design', desc: 'Import only what you need. From error handlers to data mappers and utility wrappers, keep your backend bundles lean and performant.'},
-  {Icon: Zap, title: 'MVP Ready', desc: 'Skip the repetitive setup phase. Our battle-tested components are specifically designed to help startups and makers launch their APIs faster.'},
+  {
+    Icon: FileCode2,
+    title: 'TypeScript Native',
+    desc: 'Written entirely in TypeScript with strict mode enabled. Enjoy flawless autocompletion, type safety, and robust internal interfaces out of the box.',
+  },
+  {
+    Icon: Blocks,
+    title: 'Modular Design',
+    desc: 'Import only what you need. From error handlers to data mappers and utility wrappers, keep your backend bundles lean and performant.',
+  },
+  {
+    Icon: Zap,
+    title: 'MVP Ready',
+    desc: 'Skip the repetitive setup phase. Our battle-tested components are specifically designed to help startups and makers launch their APIs faster.',
+  },
 ];
 
-const APPS: {name: string; description: string; github: string; badge?: string; Icon: LucideIcon; soon?: boolean}[] = [
-  {name: 'weapon-x', description: 'Feature flags & remote config. A self-hosted Statsig alternative.', github: 'https://github.com/open-kerno/weapon-x', badge: 'Live', Icon: Flag},
-  {name: 'auth-core', description: 'Lightweight authentication layer with JWT, refresh tokens, and role-based access control.', github: 'https://github.com/open-kerno', Icon: Shield, soon: true},
-  {name: 'data-vault', description: 'Encrypted key-value store for sensitive configuration and secrets management.', github: 'https://github.com/open-kerno', Icon: Database, soon: true},
-  {name: 'api-gateway', description: 'Minimal API gateway with rate limiting, request validation, and observability hooks.', github: 'https://github.com/open-kerno', Icon: Globe, soon: true},
-  {name: 'task-runner', description: 'Distributed background job processor built for reliability at scale.', github: 'https://github.com/open-kerno', Icon: Cpu, soon: true},
-  {name: 'config-hub', description: 'Centralized runtime configuration service with live reload and audit logs.', github: 'https://github.com/open-kerno', Icon: Settings, soon: true},
-];
+const APPS: { name: string; description: string; github: string; badge?: string; Icon: LucideIcon; soon?: boolean }[] =
+  [
+    {
+      name: 'weapon-x',
+      description: 'Feature flags & remote config. A self-hosted Statsig alternative.',
+      github: 'https://github.com/open-kerno/weapon-x',
+      badge: 'Live',
+      Icon: Flag,
+    },
+    {
+      name: 'auth-core',
+      description: 'Lightweight authentication layer with JWT, refresh tokens, and role-based access control.',
+      github: 'https://github.com/open-kerno',
+      Icon: Shield,
+      soon: true,
+    },
+    {
+      name: 'data-vault',
+      description: 'Encrypted key-value store for sensitive configuration and secrets management.',
+      github: 'https://github.com/open-kerno',
+      Icon: Database,
+      soon: true,
+    },
+    {
+      name: 'api-gateway',
+      description: 'Minimal API gateway with rate limiting, request validation, and observability hooks.',
+      github: 'https://github.com/open-kerno',
+      Icon: Globe,
+      soon: true,
+    },
+    {
+      name: 'task-runner',
+      description: 'Distributed background job processor built for reliability at scale.',
+      github: 'https://github.com/open-kerno',
+      Icon: Cpu,
+      soon: true,
+    },
+    {
+      name: 'config-hub',
+      description: 'Centralized runtime configuration service with live reload and audit logs.',
+      github: 'https://github.com/open-kerno',
+      Icon: Settings,
+      soon: true,
+    },
+  ];
 
 // ── Helpers ──────────────────────────────────────────────────────
 
 function copyText(text: string, cb: () => void) {
   const fallback = () => {
     const ta = document.createElement('textarea');
-    ta.value = text; ta.style.position = 'fixed';
-    document.body.appendChild(ta); ta.focus(); ta.select();
-    try { document.execCommand('copy'); cb(); } catch (_) {}
+    ta.value = text;
+    ta.style.position = 'fixed';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try {
+      document.execCommand('copy');
+      cb();
+    } catch (_) {}
     document.body.removeChild(ta);
   };
   if (navigator.clipboard && window.isSecureContext) {
     navigator.clipboard.writeText(text).then(cb).catch(fallback);
-  } else { fallback(); }
+  } else {
+    fallback();
+  }
 }
 
 // ── Reusable command box ─────────────────────────────────────────
 
-function CmdBox({cmd}: {cmd: string}) {
+function CmdBox({ cmd }: { cmd: string }) {
   const [copied, setCopied] = useState(false);
   function copy() {
-    copyText(cmd, () => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+    copyText(cmd, () => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
   }
   return (
     <div className="relative bg-okc-black border border-okc-cobalt rounded-xl p-1 shadow-glow transition-shadow duration-300 hover:shadow-glow-intense flex items-center overflow-hidden group">
@@ -83,13 +164,16 @@ function CmdBox({cmd}: {cmd: string}) {
         <span className="text-okc-cyan mr-2">$</span>
         <span>{cmd}</span>
       </div>
-      <button onClick={copy} aria-label="Copy command"
+      <button
+        onClick={copy}
+        aria-label="Copy command"
         className={clsx(
           'p-2 rounded-lg transition-all duration-200 flex-shrink-0 active:scale-95 flex items-center justify-center min-w-[44px]',
           copied
             ? 'bg-okc-cobalt/40 border border-okc-cyan text-okc-cyan'
             : 'bg-okc-cobalt/20 hover:bg-okc-cobalt text-okc-white group-hover:bg-okc-cobalt/50',
-        )}>
+        )}
+      >
         {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
       </button>
     </div>
@@ -118,8 +202,12 @@ function DocsEmbed() {
               {DOCS_URL}
             </div>
           </div>
-          <a href={DOCS_URL} target="_blank" rel="noopener noreferrer"
-            className="text-okc-white/40 hover:text-okc-cyan transition-colors text-xs font-medium whitespace-nowrap">
+          <a
+            href={DOCS_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-okc-white/40 hover:text-okc-cyan transition-colors text-xs font-medium whitespace-nowrap"
+          >
             Open ↗
           </a>
         </div>
@@ -128,7 +216,7 @@ function DocsEmbed() {
           src={DOCS_URL}
           title="Open Kerno Commons — API Documentation"
           className="w-full border-0"
-          style={{height: '520px'}}
+          style={{ height: '520px' }}
           loading="lazy"
         />
       </div>
@@ -151,23 +239,28 @@ function Hero() {
       </div>
 
       <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight max-w-4xl mb-6">
-        Ship your MVP{' '}
-        <br className="hidden md:block" />
+        Ship your MVP <br className="hidden md:block" />
         <span className="text-ribbon leading-tight">Fast &amp; Reliably.</span>
       </h1>
 
       <p className="text-lg md:text-xl text-okc-white/70 max-w-2xl mb-10 leading-relaxed">
-        <strong className="text-okc-white font-semibold">@open-kerno/commons</strong> provides the essential,
-        robust TypeScript backend components so you can focus on building your product, not boilerplate.
+        <strong className="text-okc-white font-semibold">@open-kerno/commons</strong> provides the essential, robust
+        TypeScript backend components so you can focus on building your product, not boilerplate.
       </p>
 
       <div className="flex flex-col sm:flex-row gap-4 items-center justify-center w-full">
-        <Link to="/intro"
-          className="px-8 py-3.5 rounded-lg bg-gradient-ribbon text-okc-white font-bold tracking-wide shadow-ribbon hover:shadow-ribbon-hover transform hover:-translate-y-1 transition-all duration-300 w-full sm:w-auto text-center border border-white/10">
+        <Link
+          to="/intro"
+          className="px-8 py-3.5 rounded-lg bg-gradient-ribbon text-okc-white font-bold tracking-wide shadow-ribbon hover:shadow-ribbon-hover transform hover:-translate-y-1 transition-all duration-300 w-full sm:w-auto text-center border border-white/10"
+        >
           Read the Documentation
         </Link>
-        <a href="https://github.com/open-kerno" target="_blank" rel="noopener noreferrer"
-          className="px-8 py-3.5 rounded-lg bg-transparent border border-okc-cobalt hover:bg-okc-cobalt/10 text-okc-white font-semibold tracking-wide transition-all duration-300 w-full sm:w-auto text-center shadow-glow">
+        <a
+          href="https://github.com/open-kerno"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="px-8 py-3.5 rounded-lg bg-transparent border border-okc-cobalt hover:bg-okc-cobalt/10 text-okc-white font-semibold tracking-wide transition-all duration-300 w-full sm:w-auto text-center shadow-glow"
+        >
           View Source
         </a>
       </div>
@@ -184,8 +277,11 @@ function FeaturesSection() {
           <p className="text-okc-white/60">Built for modern TypeScript backend ecosystems.</p>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 lg:gap-8">
-          {FEATURES.map(({Icon, title, desc}) => (
-            <div key={title} className="bg-[#050d1f] border border-okc-electric/30 rounded-2xl p-8 shadow-glow hover:border-okc-electric/70 hover:shadow-glow-intense transition-all duration-300 group hover:-translate-y-1 transform">
+          {FEATURES.map(({ Icon, title, desc }) => (
+            <div
+              key={title}
+              className="bg-[#050d1f] border border-okc-electric/30 rounded-2xl p-8 shadow-glow hover:border-okc-electric/70 hover:shadow-glow-intense transition-all duration-300 group hover:-translate-y-1 transform"
+            >
               <div className="w-12 h-12 rounded-xl bg-gradient-ribbon p-0.5 mb-6 shadow-glow">
                 <div className="w-full h-full bg-okc-black rounded-[10px] flex items-center justify-center">
                   <Icon className="w-6 h-6 text-okc-cyan group-hover:text-okc-white transition-colors duration-300" />
@@ -205,7 +301,7 @@ function FeaturesSection() {
 
 function CommonsSection() {
   const [active, setActive] = useState<Lang>('nodejs');
-  const {cmd, repo, file} = COMMANDS[active];
+  const { cmd, repo, file } = COMMANDS[active];
 
   return (
     <section className="w-full py-20 px-4 border-t border-okc-cobalt/30 relative">
@@ -218,14 +314,17 @@ function CommonsSection() {
         </div>
 
         <div className="flex gap-2 justify-center flex-wrap mb-6">
-          {LANGS.map(({id, label}) => (
-            <button key={id} onClick={() => setActive(id)}
+          {LANGS.map(({ id, label }) => (
+            <button
+              key={id}
+              onClick={() => setActive(id)}
               className={clsx(
                 'px-5 py-1.5 rounded-full border text-sm font-medium transition-all duration-200 cursor-pointer',
                 active === id
                   ? 'bg-gradient-ribbon border-transparent text-okc-white'
                   : 'border-okc-cobalt text-okc-white/70 hover:border-okc-electric hover:text-okc-white bg-transparent',
-              )}>
+              )}
+            >
               {label}
             </button>
           ))}
@@ -237,14 +336,20 @@ function CommonsSection() {
 
         <div className="flex items-center justify-center gap-2 text-xs text-okc-white/50 flex-wrap">
           <Github className="w-3.5 h-3.5" />
-          <a href={`https://${repo}`} target="_blank" rel="noopener noreferrer"
-            className="text-okc-electric hover:text-okc-cyan transition-colors">
+          <a
+            href={`https://${repo}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-okc-electric hover:text-okc-cyan transition-colors"
+          >
             {repo}
           </a>
           <span className="opacity-40">·</span>
           <span>
             Updates{' '}
-            <code className="bg-okc-cobalt/20 border border-okc-cobalt/40 rounded px-1 text-okc-cyan text-xs">{file}</code>
+            <code className="bg-okc-cobalt/20 border border-okc-cobalt/40 rounded px-1 text-okc-cyan text-xs">
+              {file}
+            </code>
           </span>
         </div>
       </div>
@@ -262,7 +367,10 @@ function AppsSection() {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {APPS.map((app) => (
-            <div key={app.name} className="bg-[#050d1f] border border-okc-electric/30 rounded-2xl shadow-glow hover:border-okc-electric/70 hover:shadow-glow-intense transition-all duration-300 group hover:-translate-y-1 transform flex flex-col overflow-hidden relative">
+            <div
+              key={app.name}
+              className="bg-[#050d1f] border border-okc-electric/30 rounded-2xl shadow-glow hover:border-okc-electric/70 hover:shadow-glow-intense transition-all duration-300 group hover:-translate-y-1 transform flex flex-col overflow-hidden relative"
+            >
               {/* Top accent + ambient glow */}
               <div className="h-0.5 w-full bg-gradient-ribbon flex-shrink-0" />
               <div className="absolute -right-10 -top-10 w-32 h-32 bg-gradient-ribbon opacity-0 blur-2xl group-hover:opacity-15 transition-opacity pointer-events-none" />
@@ -299,8 +407,12 @@ function AppsSection() {
                 <p className="text-okc-white/55 text-sm leading-relaxed flex-1">{app.description}</p>
 
                 {/* Footer link */}
-                <a href={app.github} target="_blank" rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 text-okc-electric hover:text-okc-cyan text-sm font-medium transition-colors duration-200 mt-1">
+                <a
+                  href={app.github}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 text-okc-electric hover:text-okc-cyan text-sm font-medium transition-colors duration-200 mt-1"
+                >
                   <Github className="w-4 h-4" />
                   View on GitHub
                 </a>
@@ -322,13 +434,21 @@ function PageFooter() {
           <span className="text-okc-white/50 text-sm">© 2026 Open Kerno. MIT Licensed.</span>
         </div>
         <div className="flex gap-6">
-          <a href="https://github.com/open-kerno" target="_blank" rel="noopener noreferrer"
-            className="text-okc-white/50 hover:text-okc-cyan transition-colors duration-200">
+          <a
+            href="https://github.com/open-kerno"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-okc-white/50 hover:text-okc-cyan transition-colors duration-200"
+          >
             <span className="sr-only">GitHub</span>
             <Github className="w-5 h-5" />
           </a>
-          <a href="https://www.npmjs.com/package/@open-kerno/commons" target="_blank" rel="noopener noreferrer"
-            className="text-okc-white/50 hover:text-okc-electric transition-colors duration-200">
+          <a
+            href="https://www.npmjs.com/package/@open-kerno/commons"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-okc-white/50 hover:text-okc-electric transition-colors duration-200"
+          >
             <span className="sr-only">NPM</span>
             <Package className="w-5 h-5" />
           </a>
@@ -345,7 +465,10 @@ export default function Home(): ReactNode {
     <>
       <Head>
         <title>Open Kerno | Backend Essentials for MVPs</title>
-        <meta name="description" content="Shared core utilities, base configurations, and essential building blocks for open-kerno projects." />
+        <meta
+          name="description"
+          content="Shared core utilities, base configurations, and essential building blocks for open-kerno projects."
+        />
         <style>{`
           .okc-page {
             background-color: #000000;
@@ -388,12 +511,20 @@ export default function Home(): ReactNode {
               </span>
             </div>
             <div className="flex items-center gap-4">
-              <a href="https://www.npmjs.com/package/@open-kerno/commons" target="_blank" rel="noopener noreferrer"
-                className="text-okc-white/70 hover:text-okc-white transition-colors duration-200 flex items-center gap-1.5 text-sm font-medium">
+              <a
+                href="https://www.npmjs.com/package/@open-kerno/commons"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-okc-white/70 hover:text-okc-white transition-colors duration-200 flex items-center gap-1.5 text-sm font-medium"
+              >
                 <Package className="w-4 h-4" /> NPM
               </a>
-              <a href="https://github.com/open-kerno/commons-ts" target="_blank" rel="noopener noreferrer"
-                className="text-okc-white/70 hover:text-okc-white transition-colors duration-200 flex items-center gap-1.5 text-sm font-medium">
+              <a
+                href="https://github.com/open-kerno/commons-ts"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-okc-white/70 hover:text-okc-white transition-colors duration-200 flex items-center gap-1.5 text-sm font-medium"
+              >
                 <Github className="w-4 h-4" /> GitHub
               </a>
             </div>
@@ -411,7 +542,12 @@ export default function Home(): ReactNode {
             <div className="max-w-7xl mx-auto">
               <div className="text-center mb-12">
                 <h2 className="text-3xl md:text-4xl font-bold mb-4">API Documentation</h2>
-                <p className="text-okc-white/60">Full reference for <code className="text-okc-cyan/80 bg-okc-cobalt/20 px-1.5 py-0.5 rounded text-sm">@open-kerno/commons</code></p>
+                <p className="text-okc-white/60">
+                  Full reference for{' '}
+                  <code className="text-okc-cyan/80 bg-okc-cobalt/20 px-1.5 py-0.5 rounded text-sm">
+                    @open-kerno/commons
+                  </code>
+                </p>
               </div>
               <DocsEmbed />
             </div>
