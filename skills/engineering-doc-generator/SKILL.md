@@ -1,6 +1,6 @@
 ---
 name: engineering-doc-generator
-description: Generates two-file MDX engineering documentation (conceptual guide + TypeScript implementation) for any technical topic, following the open-kerno/docs structure and style conventions.
+description: Generates a single MDX engineering documentation file (conceptual guide) for any technical topic, following the open-kerno/docs structure and style conventions.
 license: MIT
 compatibility: "Claude Code, Cursor, or any agentic coding assistant with file read/write access inside the open-kerno/docs Docusaurus project."
 metadata:
@@ -10,7 +10,7 @@ metadata:
 
 # Skill: Generate Engineering Documentation
 
-Generate a two-file MDX documentation entry under `docs/` following the exact structure and style used across this repository.
+Generate a single MDX documentation file under `docs/` following the exact structure and style used across this repository.
 
 ## When to use
 
@@ -21,16 +21,13 @@ When the user provides a technical topic and asks to generate or add documentati
 For topic `{topic-slug}`, produce:
 
 ```
-docs/{topic-slug}/index.mdx
-docs/{topic-slug}/typescript-implementation.mdx
+docs/{topic-slug}.mdx
 ```
 
-- **`index.mdx`** — Conceptual guide: the "why", standards, rules, reference tables, architectural decisions. Written from the CTO to all engineering teams.
-- **`typescript-implementation.mdx`** — Concrete, copy-paste-ready TypeScript/Node.js code examples. One example per section. No theory — only implementation.
+- **`{topic-slug}.mdx`** — Conceptual guide: the "why", standards, rules, reference tables, architectural decisions. Written from the CTO to all engineering teams.
 
-Before writing, read an existing pair to calibrate style:
-- `docs/encryption-standards/index.mdx`
-- `docs/encryption-standards/typescript-implementation.mdx`
+Before writing, read an existing file to calibrate style:
+- `docs/encryption-standards.mdx`
 
 ---
 
@@ -38,13 +35,12 @@ Before writing, read an existing pair to calibrate style:
 
 Act as the CTO of a fast-growing startup. Write an engineering-wide technical guide to align all engineering and DevOps teams on our **{TOPIC_TITLE}** standards.
 
-Create two MDX files at:
-- `docs/{topic-slug}/index.mdx`
-- `docs/{topic-slug}/typescript-implementation.mdx`
+Create one MDX file at:
+- `docs/{topic-slug}.mdx`
 
 ---
 
-### File 1 — `index.mdx`
+### `{topic-slug}.mdx`
 
 **Frontmatter:**
 ```yaml
@@ -77,37 +73,3 @@ tags: [standards, {tag1}, {tag2}, ...]
 - Blockquotes for architectural warnings and critical rules.
 - Inline code backticks for all values, column names, functions, package names.
 - End with: `*Questions or edge cases not covered here? Open a discussion in the \`#engineering-standards\` channel.*`
-
----
-
-### File 2 — `typescript-implementation.mdx`
-
-**Frontmatter:**
-```yaml
----
-sidebar_position: 1
-title: TypeScript Implementation
-description: Code examples for {what the code demonstrates} using {main library/tool}.
-tags: [typescript, {tag1}, {tag2}]
----
-```
-
-**Tone & writing requirements:**
-- No theory. No "why". Only implementation.
-- Each section: one sentence of context, then the code block.
-- Blockquotes only for critical "never do this" or "always do this" warnings.
-
-**Document structure:**
-
-1. **Installation & Import** — `npm install` command, then import statement.
-2. **{Basic Operation}** — Simplest possible use case. Show input and output in comments.
-3. **{Validation / Check}** — Typed function that validates input and returns a structured result interface.
-4. **{Normalization / Transform}** — Function that normalizes/transforms the input to the standard format.
-5. **{Integration Example}** — Real-world usage (e.g. Express middleware, Prisma hook, database column). Show full context.
-6. **{Edge Cases / Error Handling}** — Handle the two or three most likely failure modes. Typed error returns, no exceptions thrown.
-
-**Formatting rules:**
-- All code blocks use `typescript` language tag.
-- Every code block is self-contained and runnable.
-- Variable names must be explicit — no `x`, `val`, `tmp`.
-- No `any` types.
