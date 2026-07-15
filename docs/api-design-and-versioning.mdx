@@ -1,0 +1,271 @@
+---
+sidebar_position: 6
+title: API Design and Versioning
+description: Engineering guide for structuring URLs, handling pagination, and versioning all HTTP endpoints across every team.
+author: CTO
+tags: [standards, api, versioning, rest, pagination, url-design]
+---
+
+# API Design and Versioning
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> A consistent API is a product. Every team that publishes an endpoint is publishing a contract. Break that contract and you break your clients.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: URL Structure](#the-standard-url-structure)
+3. [Mandatory Versioning](#mandatory-versioning)
+4. [Pagination](#pagination)
+5. [HTTP Methods and Status Codes](#http-methods-and-status-codes)
+6. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+Without a shared API standard, every team makes different choices. Clients break. Integration costs grow. Debugging gets harder.
+
+### Clients break when URLs change without notice
+
+**Unversioned endpoints break silently.**
+If a team changes `/users` to return a different shape, every mobile app, third-party integration, and internal service that calls that endpoint can break immediately. There is no safe way to make that change. With versioning in the URL, you can evolve `/v2/users` while `/v1/users` keeps working.
+
+### Inconsistent pagination confuses every consumer
+
+**Every team inventing its own pagination format.**
+One service returns `page` and `limit`. Another returns `offset` and `count`. A third returns a `cursor`. Frontend teams have to write different parsing code for each one. This is waste. It also produces bugs when a developer copies logic from one integration to another.
+
+### Unclear URLs create maintenance debt
+
+**Verbs in URLs, nested resources that go five levels deep, plural vs. singular mixed randomly.**
+These patterns make APIs hard to document, hard to test, and hard to reason about. New engineers spend time guessing how to call an endpoint instead of building features.
+
+> **Architectural warning:** Fixing a URL structure after clients depend on it is expensive. It requires a versioned migration, client updates, and a deprecation window. Getting the structure right at first publication costs almost nothing. Fixing it later costs a lot.
+
+---
+
+## The Standard: URL Structure
+
+All HTTP endpoints must follow these rules.
+
+### Rules
+
+| Rule | Correct | Wrong |
+|---|---|---|
+| Use lowercase letters | `/v1/user-accounts` | `/v1/UserAccounts` |
+| Use hyphens, not underscores | `/v1/order-items` | `/v1/order_items` |
+| Use plural nouns for collections | `/v1/users` | `/v1/user` |
+| No verbs in the path | `POST /v1/orders` | `POST /v1/createOrder` |
+| Keep nesting shallow (max 2 levels) | `/v1/users/{id}/orders` | `/v1/users/{id}/orders/{id}/items/{id}/reviews` |
+| IDs always in the path, not the query string | `/v1/users/{id}` | `/v1/users?id=123` |
+
+### Before and after
+
+| Raw idea | Wrong URL | Correct URL |
+|---|---|---|
+| Get a single user | `/getUser?userId=5` | `GET /v1/users/5` |
+| Create an order | `/orders/create` | `POST /v1/orders` |
+| Cancel an order | `/cancelOrder/99` | `POST /v1/orders/99/cancellation` |
+| List a user's invoices | `/user_invoices?user=3` | `GET /v1/users/3/invoices` |
+| Search products | `/searchProducts?q=hat` | `GET /v1/products?q=hat` |
+
+---
+
+## Mandatory Versioning
+
+Every endpoint must include a version prefix in the URL. No exceptions.
+
+### Format
+
+```
+/{version}/{resource}
+```
+
+- Version is always `v` followed by a positive integer: `v1`, `v2`, `v3`.
+- No minor versions in the URL. `/v1.1/users` is not allowed. Breaking changes get a new major version.
+- The version is the first segment after the domain.
+
+### Rules
+
+| Rule | Detail |
+|---|---|
+| All new endpoints start at `v1` | Even if you plan to change them soon |
+| A new version is required for breaking changes | Removing a field, renaming a field, changing a type |
+| Non-breaking additions do not need a new version | Adding an optional field to a response is safe |
+| Old versions must stay alive for at least 90 days after deprecation | Give clients time to migrate |
+| Deprecated versions must return a `Deprecation` header | See example below |
+
+### Deprecation header
+
+When a version is deprecated, include this header in every response:
+
+```http
+Deprecation: true
+Sunset: Sat, 15 Oct 2026 00:00:00 GMT
+Link: <https://api.example.com/v2/users>; rel="successor-version"
+```
+
+This tells clients exactly when the endpoint goes away and where to go instead.
+
+> **Architectural warning:** Skipping versioning because "this API is internal" is not acceptable. Internal APIs grow external consumers. Microservices depend on each other. The cost of adding versioning after the fact — across every caller — is always higher than adding it on day one.
+
+---
+
+## Pagination
+
+All endpoints that return a list must support pagination. Returning an unbounded list is not allowed.
+
+### Standard: cursor-based pagination
+
+We use cursor-based pagination as the default. It works correctly with real-time data, avoids the offset drift problem, and scales to large datasets.
+
+```json
+{
+  "data": [...],
+  "pagination": {
+    "next_cursor": "eyJpZCI6MTAwfQ==",
+    "has_more": true
+  }
+}
+```
+
+To get the next page, the client passes `?cursor=eyJpZCI6MTAwfQ==` as a query parameter.
+
+### When to use offset pagination
+
+Offset pagination (`page` + `per_page`) is allowed only when the client needs to jump to an arbitrary page number (for example, an admin table with page navigation). It must not be used for feeds, timelines, or any endpoint where new records are inserted frequently.
+
+| Scenario | Use |
+|---|---|
+| Feed, timeline, event stream | Cursor-based |
+| Admin table with page numbers | Offset (`page`, `per_page`) |
+| Search results | Cursor-based |
+| Report export (all records) | Neither — use a background job and a download link |
+
+### Pagination response envelope
+
+Every paginated response must follow this structure:
+
+```json
+{
+  "data": [
+    { "id": "1", "name": "..." }
+  ],
+  "pagination": {
+    "next_cursor": "string or null",
+    "has_more": true
+  }
+}
+```
+
+For offset pagination:
+
+```json
+{
+  "data": [...],
+  "pagination": {
+    "page": 1,
+    "per_page": 20,
+    "total": 543,
+    "total_pages": 28
+  }
+}
+```
+
+### Limits
+
+| Parameter | Default | Maximum |
+|---|---|---|
+| `per_page` / `limit` | `20` | `100` |
+| No limit provided | Use default | — |
+| Limit above maximum | Return `400 Bad Request` | — |
+
+Never return more than 100 records in a single response. If a client needs all records, they must paginate or use an export endpoint.
+
+---
+
+## HTTP Methods and Status Codes
+
+Use the right method for the right action. Do not use `GET` for writes or `POST` for everything.
+
+### Methods
+
+| Method | Use for | Body |
+|---|---|---|
+| `GET` | Read a resource or list | No |
+| `POST` | Create a resource | Yes |
+| `PUT` | Replace a resource completely | Yes |
+| `PATCH` | Update specific fields | Yes |
+| `DELETE` | Remove a resource | No |
+
+### Status codes
+
+| Code | When to use |
+|---|---|
+| `200 OK` | Successful read or update |
+| `201 Created` | Resource was created |
+| `204 No Content` | Successful delete or action with no response body |
+| `400 Bad Request` | Invalid input from the client |
+| `401 Unauthorized` | Missing or invalid authentication |
+| `403 Forbidden` | Authenticated but not allowed |
+| `404 Not Found` | Resource does not exist |
+| `409 Conflict` | State conflict (duplicate, version mismatch) |
+| `422 Unprocessable Entity` | Input is valid JSON but fails business rules |
+| `429 Too Many Requests` | Rate limit exceeded — include `Retry-After` header |
+| `500 Internal Server Error` | Something went wrong on the server |
+
+Do not use `200 OK` with an error payload. If the request failed, return an error status code.
+
+### Error response shape
+
+All error responses must use this shape:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "The field 'email' is required.",
+    "details": [
+      { "field": "email", "issue": "required" }
+    ]
+  }
+}
+```
+
+`code` is a machine-readable string. `message` is human-readable. `details` is optional and used for validation errors.
+
+---
+
+## Quick Reference
+
+```
+✅  /v1/users                   — list users
+✅  /v1/users/{id}              — get one user
+✅  /v1/users/{id}/orders       — list a user's orders
+✅  POST /v1/orders             — create an order
+✅  PATCH /v1/orders/{id}       — update fields on an order
+✅  POST /v1/orders/{id}/cancellation — cancel (action as sub-resource)
+
+❌  /getUsers                   — verb in path
+❌  /user                       — singular noun for a collection
+❌  /users/{id}/orders/{id}/items/{id}/reviews — too deeply nested
+❌  /v1.1/users                 — minor version in URL
+❌  /users (no version)         — unversioned endpoint
+❌  GET /users?limit=10000      — unbounded or oversized list
+```
+
+| Task | How |
+|---|---|
+| Create a new endpoint | Start at `v1`, follow URL rules |
+| Return a collection | Paginate with cursor; default `per_page=20`, max `100` |
+| Make a breaking change | Create `v2`, keep `v1` alive for 90+ days |
+| Deprecate a version | Add `Deprecation`, `Sunset`, and `Link` headers |
+| Return an error | Use the correct 4xx/5xx code + error envelope |
+| Perform an action (not CRUD) | Model it as a sub-resource: `POST /orders/{id}/cancellation` |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
