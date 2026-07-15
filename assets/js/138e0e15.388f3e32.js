@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_open_kerno_docs=self.webpackChunk_open_kerno_docs||[]).push([["1234"],{1597(e){e.exports=JSON.parse('{"name":"@easyops-cn/docusaurus-search-local","id":"default"}')}}]);

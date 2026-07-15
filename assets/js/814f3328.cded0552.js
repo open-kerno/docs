@@ -1,1 +1,0 @@
-"use strict";(self.webpackChunktemp_docs=self.webpackChunktemp_docs||[]).push([["1833"],{5513(e){e.exports=JSON.parse('{"title":"Recent posts","items":[{"title":"Welcome to the Kerno Engineering Blog","permalink":"/docs/blog/welcome-to-the-eng-blog","unlisted":false,"date":"2026-07-07T00:00:00.000Z"}]}')}}]);

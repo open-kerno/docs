@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_open_kerno_docs=self.webpackChunk_open_kerno_docs||[]).push([["3220"],{1912(o){o.exports=JSON.parse('{"blogBasePath":"/docs/blog","blogTitle":"Blog","authorsListPath":"/docs/blog/authors"}')}}]);

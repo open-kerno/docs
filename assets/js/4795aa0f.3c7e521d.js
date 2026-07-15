@@ -1,1 +1,0 @@
-"use strict";(self.webpackChunktemp_docs=self.webpackChunktemp_docs||[]).push([["807"],{3937(e){e.exports=JSON.parse('{"authors":[{"name":"Kerno Engineering","title":"Engineering Team","url":"https://github.com/open-kerno","imageURL":"https://github.com/open-kerno.png","key":"engineering","page":null,"count":1}]}')}}]);
