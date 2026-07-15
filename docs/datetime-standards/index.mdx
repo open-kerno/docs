@@ -17,7 +17,6 @@ tags: [standards, datetime, utc, iso8601, timezones]
 
 1. [Why This Matters](#why-this-matters)
 2. [The Standard: UTC + ISO 8601](#the-standard-utc--iso-8601)
-3. [Official Tooling](#official-tooling)
 4. [Database and Storage Rules](#database-and-storage-rules)
 5. [API and Communication Rules](#api-and-communication-rules)
 6. [Quick Reference](#quick-reference)
@@ -80,48 +79,6 @@ If timestamps are stored in the application server's local timezone, every query
 | `1710028800` (Unix epoch) | `2024-03-10T02:40:00.000Z` |
 | `2024-03-10 14:30:00` (no timezone) | `2024-03-10T14:30:00.000Z` |
 | `2024-03-10T14:30:00+05:30` (local offset) | `2024-03-10T09:00:00.000Z` (converted to UTC for storage) |
-
----
-
-## Official Tooling
-
-### TypeScript / JavaScript
-
-Use **`date-fns`** for all date manipulation.
-
-```bash
-npm install date-fns
-```
-
-- Pure functions — no mutation, no global state.
-- Tree-shakeable — only the functions you import are bundled.
-- Explicit timezone handling via `date-fns-tz` for conversion at display time.
-- No prototype pollution (unlike `moment.js`).
-- Well-maintained, widely adopted, typed out of the box.
-
-**Do not use:**
-- `moment.js` — deprecated, large bundle size, mutable API.
-- `Date.toString()` or `Date.toLocaleString()` — locale-dependent output, not ISO 8601.
-- Manual string formatting — error-prone, not timezone-aware.
-- Storing Unix timestamps as integers without documentation — integers have no inherent timezone semantics.
-
-### Rust
-
-Use **`chrono`** for all date and time handling.
-
-```toml
-# Cargo.toml
-chrono = { version = "0.4", features = ["serde"] }
-```
-
-- `DateTime<Utc>` enforces UTC at the type level — no accidental local-time values.
-- Built-in `serde` support serializes to ISO 8601 strings automatically.
-- `chrono-tz` for named timezone conversions at display time.
-
-**Do not use:**
-- `std::time::SystemTime` for application timestamps — no timezone context, not human-readable.
-- `NaiveDateTime` for storage or API fields — it has no timezone information by design.
-- Manual string formatting with `format!()` — use `chrono`'s `to_rfc3339()` instead.
 
 ---
 
