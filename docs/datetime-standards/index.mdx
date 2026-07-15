@@ -85,7 +85,9 @@ If timestamps are stored in the application server's local timezone, every query
 
 ## Official Tooling
 
-Use **`date-fns`** for all date manipulation in TypeScript/JavaScript.
+### TypeScript / JavaScript
+
+Use **`date-fns`** for all date manipulation.
 
 ```bash
 npm install date-fns
@@ -102,6 +104,24 @@ npm install date-fns
 - `Date.toString()` or `Date.toLocaleString()` — locale-dependent output, not ISO 8601.
 - Manual string formatting — error-prone, not timezone-aware.
 - Storing Unix timestamps as integers without documentation — integers have no inherent timezone semantics.
+
+### Rust
+
+Use **`chrono`** for all date and time handling.
+
+```toml
+# Cargo.toml
+chrono = { version = "0.4", features = ["serde"] }
+```
+
+- `DateTime<Utc>` enforces UTC at the type level — no accidental local-time values.
+- Built-in `serde` support serializes to ISO 8601 strings automatically.
+- `chrono-tz` for named timezone conversions at display time.
+
+**Do not use:**
+- `std::time::SystemTime` for application timestamps — no timezone context, not human-readable.
+- `NaiveDateTime` for storage or API fields — it has no timezone information by design.
+- Manual string formatting with `format!()` — use `chrono`'s `to_rfc3339()` instead.
 
 ---
 
