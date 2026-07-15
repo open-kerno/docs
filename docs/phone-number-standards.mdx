@@ -3,7 +3,7 @@ sidebar_position: 2
 title: Phone Number Standards
 description: Engineering guide for storing, validating, and formatting phone numbers across all systems using the E.164 standard.
 author: CTO
-tags: [standards, phone-numbers, e164, sms, validation, typescript]
+tags: [standards, phone-numbers, e164, sms, validation, typescript, go]
 ---
 
 # Phone Number Standards
@@ -86,9 +86,13 @@ We store the number **as a plain string with no spaces, hyphens, parentheses, or
 
 ## Official Tooling
 
-For all Node.js and TypeScript projects, the official package is:
+Use the approved library for your language. Do not use alternatives without discussing with the platform team first.
 
-### [`awesome-phonenumber`](https://www.npmjs.com/package/awesome-phonenumber)
+---
+
+### TypeScript / JavaScript
+
+**Package:** [`awesome-phonenumber`](https://www.npmjs.com/package/awesome-phonenumber)
 
 ```bash
 npm install awesome-phonenumber
@@ -103,6 +107,25 @@ npm install awesome-phonenumber
 - No runtime dependencies.
 
 Do not use `google-libphonenumber` directly. Do not write custom regex validators. Do not use `phone`, `libphonenumber-js`, or other alternatives without discussing with the platform team first.
+
+---
+
+### Go
+
+**Package:** [`github.com/nyaruka/phonenumbers/v2`](https://pkg.go.dev/github.com/nyaruka/phonenumbers/v2)
+
+```bash
+go get github.com/nyaruka/phonenumbers/v2
+```
+
+**Why this package:**
+
+- Go port of Google's `libphonenumber` — same parsing and validation rules as the reference implementation.
+- Actively maintained by Nyaruka, the same team behind RapidPro.
+- Handles parsing, validation, and formatting in one API.
+- No CGo required — pure Go.
+
+Do not write custom regex validators. Do not use other Go phone libraries without discussing with the platform team first.
 
 ---
 
@@ -176,7 +199,10 @@ Never backfill and drop in the same migration. It is not reversible.
 | Throw on invalid | Wrap in `toE164()`, throw `BadRequestError` |
 | Store in DB | `VARCHAR(20)`, index the column |
 
-**Package:** [`awesome-phonenumber`](https://www.npmjs.com/package/awesome-phonenumber) — the only approved library for phone number handling in Node.js/TypeScript services.
+| Language | Approved package |
+|---|---|
+| Node.js / TypeScript | [`awesome-phonenumber`](https://www.npmjs.com/package/awesome-phonenumber) |
+| Go | [`github.com/nyaruka/phonenumbers/v2`](https://pkg.go.dev/github.com/nyaruka/phonenumbers/v2) |
 
 ---
 
