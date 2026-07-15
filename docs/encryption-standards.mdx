@@ -337,7 +337,7 @@ Add these checks to your CI pipeline to catch regressions automatically. A singl
 
 | Task | Tool / Standard |
 |---|---|
-| Encrypt a field before storing | `aes-256-gcm` via Node.js `crypto` — see [TypeScript Implementation](./typescript-implementation) |
+| Encrypt a field before storing | `aes-256-gcm` via Node.js `crypto` |
 | Protect data on disk / S3 | Cloud provider encryption (KMS/SSE) |
 | Secure API traffic | TLS 1.2+ at load balancer / Cloudflare |
 | Secure internal service calls | HTTPS + mTLS where available |
