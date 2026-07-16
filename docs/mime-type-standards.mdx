@@ -1,0 +1,321 @@
+---
+sidebar_position: 23
+title: MIME Type Standards
+description: Engineering guide for defining, validating, and storing media types (MIME types) for file uploads, API responses, and data transit.
+author: CTO
+tags: [standards, mime-type, file-upload, security, validation, typescript, go]
+---
+
+# MIME Type Standards
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> This is not a suggestion. Every system that handles file uploads, serves files, or passes binary data over HTTP must follow this guide.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: IANA Media Types](#the-standard-iana-media-types)
+3. [Official Tooling](#official-tooling)
+4. [File Upload Validation](#file-upload-validation)
+5. [Database Best Practices](#database-best-practices)
+6. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+File types look like a simple label. They are not.
+
+MIME types are the contract between the sender and the receiver about what a file contains. When we get this wrong, security breaks, APIs break, and storage costs go up for files we should have rejected.
+
+### What Goes Wrong Without a Standard
+
+**File upload attacks succeed.**
+If we do not validate the actual content of an uploaded file — only its name or the `Content-Type` header sent by the client — an attacker can upload a PHP script named `photo.jpg`. The client sets `Content-Type: image/jpeg`. We store and later serve it. The server executes it. This is one of the most common web application vulnerabilities.
+
+**MIME sniffing enables XSS.**
+Browsers have a behavior called MIME sniffing: if the server does not send a correct `Content-Type` response header, the browser guesses the type from the content. A stored SVG or HTML file served with the wrong type can be executed as a script in a victim's browser. This is a stored XSS vector.
+
+**API contracts break silently.**
+When a service sends `Content-Type: application/json` but the body is actually plain text or an error message, parsers on the receiving end throw exceptions or silently discard data. Mixed types in an API are a reliability problem disguised as a data problem.
+
+**Storage and processing pipelines fail.**
+Image processing, document indexing, and media transcoding all branch on MIME type. If the stored `mime_type` field is wrong or missing, pipelines route files to the wrong processor, fail with cryptic errors, or corrupt output.
+
+**Audit and compliance reports are unreliable.**
+File type is a required field in many data retention and compliance policies. Storing `application/octet-stream` for everything — the generic fallback — makes it impossible to report accurately on what data we hold.
+
+> **Architectural warning:** The `Content-Type` header sent by a client is user-controlled input. It must never be trusted. Always detect the actual type from the file content on the server side. A guard that only checks the header is not a guard.
+
+---
+
+## The Standard: IANA Media Types
+
+We store all `mime_type` values using the **IANA media type** format. This is the same standard used by HTTP, email (RFC 2045), and all major operating systems.
+
+### Format Rules
+
+```
+[type]/[subtype]
+```
+
+| Component | Rule | Example |
+|---|---|---|
+| `type` | Top-level category, lowercase | `image`, `application`, `text`, `video`, `audio` |
+| `/` | Mandatory separator | `/` |
+| `subtype` | Specific format, lowercase | `png`, `json`, `pdf`, `mp4`, `plain` |
+| Parameters | Not stored — used in headers only | `charset=utf-8` |
+
+### Common Approved Types
+
+| Use case | `mime_type` stored value |
+|---|---|
+| JSON data | `application/json` |
+| PDF document | `application/pdf` |
+| ZIP archive | `application/zip` |
+| PNG image | `image/png` |
+| JPEG image | `image/jpeg` |
+| GIF image | `image/gif` |
+| WebP image | `image/webp` |
+| SVG image | `image/svg+xml` |
+| Plain text | `text/plain` |
+| HTML | `text/html` |
+| CSV | `text/csv` |
+| MP4 video | `video/mp4` |
+| MP3 audio | `audio/mpeg` |
+| WebM video | `video/webm` |
+
+> **Rule:** If you need a type not in this table, verify it exists in the [IANA media type registry](https://www.iana.org/assignments/media-types/) before using it. Do not invent types. Do not use `application/octet-stream` as a stored value — it means "unknown binary" and is only acceptable as a last resort when the actual type genuinely cannot be detected.
+
+### Normalization Rules
+
+| Raw Input | Stored Value |
+|---|---|
+| `Image/PNG` | `image/png` |
+| `image/PNG` | `image/png` |
+| `APPLICATION/JSON` | `application/json` |
+| `image/png; charset=utf-8` | `image/png` — strip parameters before storing |
+| `.png` | ❌ Invalid — this is an extension, not a MIME type |
+| `png` | ❌ Invalid — missing type prefix |
+
+> **Rule:** Lowercase the full value. Strip any parameters (anything after `;`) before storing. Never store file extensions as MIME types.
+
+---
+
+## Official Tooling
+
+Use the approved libraries for detection and validation. Do not rely on file extensions or client-supplied headers as the source of truth.
+
+---
+
+### TypeScript / JavaScript
+
+**Detection package:** [`file-type`](https://www.npmjs.com/package/file-type)
+
+```bash
+npm install file-type
+```
+
+**Why this package:**
+
+- Detects the actual file type from the first bytes of the file (magic bytes) — not from the file name or HTTP header.
+- Supports over 100 formats including all common image, video, audio, and document types.
+- Returns `undefined` for unknown types — safe to handle explicitly.
+- Pure TypeScript, no native dependencies.
+- The only correct way to detect file type on the server side.
+
+```ts
+import { fileTypeFromBuffer } from 'file-type';
+
+const ALLOWED_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'application/pdf',
+]);
+
+async function validateAndStoreMimeType(buffer: Buffer): Promise<string> {
+  const detected = await fileTypeFromBuffer(buffer);
+  if (!detected) {
+    throw new BadRequestError('File type could not be detected.');
+  }
+  const mimeType = detected.mime.toLowerCase();
+  if (!ALLOWED_TYPES.has(mimeType)) {
+    throw new BadRequestError(`File type not allowed: ${mimeType}`);
+  }
+  return mimeType;
+}
+```
+
+**Lookup package:** [`mime`](https://www.npmjs.com/package/mime)
+
+```bash
+npm install mime
+```
+
+Use `mime` only for mapping a known extension to a MIME type in non-upload contexts (e.g., setting `Content-Type` when serving a static file with a known safe path). Never use it as a substitute for `file-type` during upload validation.
+
+Do not use `path.extname()` to determine MIME type. Do not trust `req.headers['content-type']` from the client. Do not write a manual switch/map over file extensions.
+
+---
+
+### Go
+
+**Detection:** Go's standard library `net/http` package includes `DetectContentType`.
+
+```go
+import "net/http"
+
+func detectMimeType(data []byte) string {
+    // ponytail: stdlib covers 95% of upload validation cases
+    return http.DetectContentType(data[:min(512, len(data))])
+}
+```
+
+**Why stdlib first:**
+
+- `http.DetectContentType` reads up to 512 bytes of content to detect type — covers all common formats.
+- No external dependency needed for basic validation.
+- Returns `application/octet-stream` for unknown types — safe to reject explicitly.
+
+**When stdlib is not enough:** For broader format support (WebP, AVIF, HEIC, modern video), use [`github.com/gabriel-vasile/mimetype`](https://pkg.go.dev/github.com/gabriel-vasile/mimetype).
+
+```bash
+go get github.com/gabriel-vasile/mimetype
+```
+
+```go
+import "github.com/gabriel-vasile/mimetype"
+
+var allowedTypes = map[string]bool{
+    "image/png":      true,
+    "image/jpeg":     true,
+    "image/webp":     true,
+    "application/pdf": true,
+}
+
+func validateMimeType(data []byte) (string, error) {
+    detected := mimetype.Detect(data)
+    mt := detected.String()
+    // Strip parameters: "image/png; charset=utf-8" → "image/png"
+    if i := strings.Index(mt, ";"); i != -1 {
+        mt = strings.TrimSpace(mt[:i])
+    }
+    mt = strings.ToLower(mt)
+    if !allowedTypes[mt] {
+        return "", fmt.Errorf("file type not allowed: %s", mt)
+    }
+    return mt, nil
+}
+```
+
+Do not use file extension parsing. Do not trust the `Content-Type` request header. Do not use `mime.TypeByExtension` for upload validation.
+
+---
+
+## File Upload Validation
+
+### The Validation Pipeline
+
+Every file upload must pass through all four steps in order. Skipping any step is a security gap.
+
+| Step | What to check | How |
+|---|---|---|
+| 1. Size limit | Reject files above the allowed size before reading content | `Content-Length` header + streaming read limit |
+| 2. Magic bytes detection | Detect actual type from file content | `file-type` (TS) or `mimetype` (Go) |
+| 3. Allowlist check | Reject types not in the approved set | Compare detected type against a hardcoded allowlist |
+| 4. Deep inspection | For SVG and HTML: scan for embedded scripts | Strip or reject on match |
+
+### SVG and HTML Require Extra Care
+
+SVG and HTML files can contain executable JavaScript. Even if your allowlist permits `image/svg+xml`, you must sanitize the content before storing or serving it.
+
+- **SVG:** Use a dedicated sanitizer (e.g., [`dompurify`](https://www.npmjs.com/package/dompurify) with a server-side DOM, or reject SVG entirely if you do not need it).
+- **HTML:** Do not allow user-uploaded HTML files unless you have a full sanitization pipeline in place.
+
+> **Rule:** When in doubt, do not allow SVG or HTML uploads. The attack surface is large and the sanitization requirements are non-trivial.
+
+### Response Headers
+
+When serving any user-uploaded file, always set both headers:
+
+```
+Content-Type: image/png
+X-Content-Type-Options: nosniff
+```
+
+`X-Content-Type-Options: nosniff` instructs browsers not to guess the content type. Without it, a browser may execute a stored file as a script even if `Content-Type` is set correctly.
+
+---
+
+## Database Best Practices
+
+### Column Type
+
+Store `mime_type` values as `VARCHAR(100)`. IANA type strings are short, but some subtypes with vendor prefixes (`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`) can reach 70+ characters.
+
+| Decision | Recommendation |
+|---|---|
+| **Type** | `VARCHAR(100)` |
+| **Case** | Always lowercase — enforce at application layer |
+| **Nullable** | Only if file type is genuinely optional for the entity |
+| **Default** | No default — `NULL` is better than `application/octet-stream` |
+| **Constraint** | Add a `CHECK` constraint with an allowlist if your DB schema is stable |
+
+```sql
+-- PostgreSQL: basic check constraint for a known allowlist
+ALTER TABLE uploaded_files
+  ADD COLUMN mime_type VARCHAR(100) NOT NULL
+  CHECK (mime_type IN (
+    'image/png', 'image/jpeg', 'image/webp', 'image/gif',
+    'application/pdf', 'application/zip',
+    'text/plain', 'text/csv'
+  ));
+```
+
+> If your allowlist changes frequently, enforce it at the application layer instead of the database constraint. Both must agree — the DB constraint is a last-resort guard, not the primary validation.
+
+### Indexes
+
+Index `mime_type` only if you filter by it in frequent queries (e.g., "show all PDFs for this user"). For most use cases, a partial index is more efficient.
+
+```sql
+-- Partial index: only index PDF files
+CREATE INDEX idx_files_mime_pdf
+  ON uploaded_files (mime_type)
+  WHERE mime_type = 'application/pdf';
+
+-- General index: all files by type
+CREATE INDEX idx_files_mime_type ON uploaded_files (mime_type);
+```
+
+---
+
+## Quick Reference
+
+```
+✅  Store as: image/png  |  application/json  |  application/pdf  |  video/mp4
+❌  Never store: .png  |  PNG  |  Image/PNG  |  image/png; charset=utf-8  |  application/octet-stream
+```
+
+| Task | How |
+|---|---|
+| Detect file type on upload | Read magic bytes — use `file-type` (TS) or `mimetype` (Go) |
+| Normalize for storage | Lowercase, strip parameters after `;` |
+| Validate against allowlist | Hardcoded `Set` or `map` in application code |
+| Store in DB | `VARCHAR(100)`, lowercase, not null |
+| Serve a stored file | Set `Content-Type` + `X-Content-Type-Options: nosniff` |
+| Handle unknown type | Reject the upload — do not store `application/octet-stream` |
+| Handle SVG uploads | Sanitize or reject — SVG can carry embedded scripts |
+
+| Language | Detection package | Lookup package |
+|---|---|---|
+| Node.js / TypeScript | [`file-type`](https://www.npmjs.com/package/file-type) | [`mime`](https://www.npmjs.com/package/mime) |
+| Go (common formats) | `net/http.DetectContentType` (stdlib) | `mime.TypeByExtension` (stdlib) |
+| Go (extended formats) | [`github.com/gabriel-vasile/mimetype`](https://pkg.go.dev/github.com/gabriel-vasile/mimetype) | — |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
