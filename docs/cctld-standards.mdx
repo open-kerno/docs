@@ -1,0 +1,270 @@
+---
+sidebar_position: 22
+title: ccTLD Standards
+description: Engineering guide for selecting, storing, and using country code top-level domains (ccTLDs) for localized routing and web infrastructure.
+author: CTO
+tags: [standards, cctld, dns, domains, localization, routing, infrastructure]
+---
+
+# ccTLD Standards
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> This is not a suggestion. Every system that manages localized domains, routing rules, or web infrastructure must follow this guide.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: ISO 3166-1 ccTLD](#the-standard-iso-3166-1-cctld)
+3. [Official Tooling](#official-tooling)
+4. [Database Best Practices](#database-best-practices)
+5. [Routing and Infrastructure](#routing-and-infrastructure)
+6. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+Domains look like a simple configuration detail. They are not.
+
+A ccTLD is a signal to users, browsers, search engines, and regulators about which country a service belongs to. Using the wrong domain — or an inconsistent one — creates real operational, legal, and security problems.
+
+### What Goes Wrong Without a Standard
+
+**Geo-routing breaks.**
+When services use generic TLDs (`.com`, `.net`) instead of the official country-specific suffix, CDN and DNS-based geo-routing cannot reliably route users to the correct regional edge node. Latency increases. Users in one country may be served infrastructure from another.
+
+**SEO is fragmented.**
+Search engines use the ccTLD as one of the strongest signals for regional content targeting. A store operating in Mexico without `.mx` will rank poorly for Mexican users even if the content is correct. This directly affects organic traffic and revenue.
+
+**Compliance requirements are violated.**
+Several countries — including Brazil (`.br`), Germany (`.de`), and Russia (`.ru`) — have data residency or domain registration regulations that tie local operations to a registered ccTLD. Operating without the correct suffix can expose the company to regulatory risk.
+
+**Security assumptions fail.**
+Browser security policies, HSTS preloading, and cookie scoping all interact with the domain name. Using inconsistent or unofficial domains creates gaps in CORS policies and cookie security boundaries that are hard to audit.
+
+**Data is inconsistent across services.**
+If one service stores `mx`, another stores `.mx`, and a third stores `MX`, joins, lookups, and routing logic all produce different results. Normalization must be enforced at the schema level.
+
+> **Architectural warning:** Domain and routing bugs are configuration-time bugs with user-facing symptoms. They are often discovered in production via support tickets, not monitoring. Enforce the standard at schema validation time, not after deployment.
+
+---
+
+## The Standard: ISO 3166-1 ccTLD
+
+We use **ISO 3166-1 alpha-2 country codes** as the basis for all ccTLD values. The stored value in any schema or configuration field named `cctld` must be the official two-letter suffix without a leading dot, in **lowercase**.
+
+### Format Rules
+
+```
+[two-letter ISO 3166-1 alpha-2 code, lowercase, no dot prefix]
+```
+
+| Component | Rule | Example |
+|---|---|---|
+| Length | Always 2 characters | `mx`, `co`, `es` |
+| Case | Always lowercase | `mx` not `MX` or `Mx` |
+| Dot prefix | Never stored with a dot | `mx` not `.mx` |
+| Source standard | ISO 3166-1 alpha-2 | See IANA ccTLD list |
+
+### Reference: Common ccTLDs
+
+| Country | ccTLD (stored value) | Full domain example |
+|---|---|---|
+| Colombia | `co` | `store.example.co` |
+| Mexico | `mx` | `store.example.mx` |
+| Spain | `es` | `store.example.es` |
+| United States | `us` | `store.example.us` |
+| Brazil | `br` | `store.example.com.br` |
+| Canada | `ca` | `store.example.ca` |
+| Argentina | `ar` | `store.example.ar` |
+| United Kingdom | `uk` | `store.example.co.uk` |
+| Germany | `de` | `store.example.de` |
+| France | `fr` | `store.example.fr` |
+
+> **Note on second-level ccTLDs:** Some countries use a second-level structure (e.g., `.co.uk`, `.com.br`, `.com.mx`). The `cctld` field stores only the country code (`uk`, `br`, `mx`). The full domain structure is assembled by the infrastructure layer, not stored in the `cctld` field.
+
+### Normalization Rules
+
+| Raw Input | Stored Value |
+|---|---|
+| `MX` | `mx` |
+| `.mx` | `mx` |
+| `Mx` | `mx` |
+| `MEX` | ❌ Invalid — reject, do not store |
+| `mexico` | ❌ Invalid — reject, do not store |
+| `com.mx` | ❌ Invalid — reject, do not store |
+
+> **Rule:** Normalize at write time. Accept the ISO 3166-1 alpha-2 code in any case, strip any leading dot, lowercase the result. Reject anything that does not reduce to a valid two-letter code.
+
+---
+
+## Official Tooling
+
+Use the approved libraries for validation. Do not write custom regex or maintain a local copy of the country code list.
+
+---
+
+### TypeScript / JavaScript
+
+**Package:** [`i18n-iso-countries`](https://www.npmjs.com/package/i18n-iso-countries)
+
+```bash
+npm install i18n-iso-countries
+```
+
+**Why this package:**
+
+- Maintained against the ISO 3166-1 standard with regular updates when countries change.
+- Provides `isValid(alpha2)` for code validation — no regex needed.
+- Covers all 249 officially assigned alpha-2 codes.
+- Zero runtime dependencies.
+- Tree-shakeable — only import what you need.
+
+```ts
+import { isValid, alpha2ToAlpha3 } from 'i18n-iso-countries';
+
+function normalizeCctld(raw: string): string {
+  const normalized = raw.replace(/^\./, '').toLowerCase();
+  if (!isValid(normalized)) {
+    throw new Error(`Invalid ccTLD: "${raw}"`);
+  }
+  return normalized;
+}
+```
+
+Do not write custom regex like `/^[a-z]{2}$/`. It accepts invalid codes (`zz`, `xx`) that are not assigned ccTLDs. Do not maintain a local hardcoded list — it will go stale.
+
+---
+
+### Go
+
+**Package:** [`golang.org/x/text/language`](https://pkg.go.dev/golang.org/x/text/language) combined with [`github.com/biter777/countries`](https://pkg.go.dev/github.com/biter777/countries)
+
+```bash
+go get github.com/biter777/countries
+```
+
+**Why this package:**
+
+- Covers the full ISO 3166-1 alpha-2, alpha-3, and numeric code sets.
+- Actively maintained.
+- Type-safe country lookups with no string parsing pitfalls.
+- No CGo required.
+
+```go
+import "github.com/biter777/countries"
+
+func NormalizeCctld(raw string) (string, error) {
+    normalized := strings.ToLower(strings.TrimPrefix(raw, "."))
+    c := countries.ByName(normalized)
+    if c == countries.Unknown {
+        return "", fmt.Errorf("invalid ccTLD: %q", raw)
+    }
+    return normalized, nil
+}
+```
+
+Do not use regex-only validation in Go. Do not maintain a local enum of country codes.
+
+---
+
+## Database Best Practices
+
+### Column Type
+
+Store `cctld` values as `CHAR(2)` in your database. The value is always exactly two characters after normalization.
+
+| Decision | Recommendation |
+|---|---|
+| **Type** | `CHAR(2)` |
+| **Case** | Always lowercase — enforce with a `CHECK` constraint or application layer |
+| **Nullable** | Only if the ccTLD is optional for the entity |
+| **Default** | No default — `NULL` is better than an empty string or a wrong country |
+| **Encoding** | Plain ASCII — only lowercase letters `a–z` |
+
+```sql
+-- PostgreSQL: enforce lowercase and length at the column level
+ALTER TABLE storefronts
+  ADD COLUMN cctld CHAR(2) CHECK (cctld = lower(cctld));
+```
+
+### Indexes
+
+Always index `cctld` columns used for filtering or joins. Routing queries by country are high-frequency.
+
+```sql
+-- Index for single-country lookups
+CREATE INDEX idx_storefronts_cctld ON storefronts (cctld);
+
+-- Composite index when filtering by country + another column
+CREATE INDEX idx_routes_cctld_active ON routes (cctld, is_active);
+```
+
+Because the value is always a normalized 2-character string, **equality lookups (`WHERE cctld = 'mx'`) are fast and fully index-friendly.** Mixed-case or dot-prefixed storage destroys this guarantee.
+
+### Adding a New Country
+
+When the product expands to a new country:
+
+1. Validate the ccTLD against the current IANA ccTLD list before any code change.
+2. Add the new value to any application-level allowlist or enum (if one exists).
+3. Do not create a new column per country. The `cctld` field is the discriminator — use it in `WHERE` clauses and routing rules.
+4. Update any CDN or DNS routing configuration to cover the new domain before traffic is routed there.
+
+---
+
+## Routing and Infrastructure
+
+### Domain Assembly
+
+The `cctld` field is the source of truth for the country suffix. Assemble full domain names in infrastructure configuration, not in application code.
+
+| `cctld` value | Assembled domain | Notes |
+|---|---|---|
+| `mx` | `store.example.com.mx` | Mexico uses second-level structure |
+| `co` | `store.example.co` | Colombia is a direct second-level |
+| `es` | `store.example.es` | Spain is a direct second-level |
+| `br` | `store.example.com.br` | Brazil uses second-level structure |
+| `uk` | `store.example.co.uk` | UK uses second-level structure |
+
+> **Rule:** Store only the alpha-2 code. Let the CDN or reverse proxy configuration handle second-level structure differences per country. Do not hardcode `.com.mx` vs `.mx` logic in application routing tables.
+
+### CDN and DNS Configuration
+
+Each ccTLD deployment must have:
+
+- A registered domain with the national registrar for that country.
+- A valid TLS certificate covering the full domain (wildcard or SAN).
+- HSTS enabled with a `max-age` of at least 1 year.
+- CDN routing rules that map the ccTLD to the correct regional edge pool.
+
+Do not serve localized content from a generic TLD (`.com`, `.io`) with a subdirectory path (`/mx/`, `/co/`). This is an acceptable short-term workaround only — it is not a permanent architecture.
+
+---
+
+## Quick Reference
+
+```
+✅  Store as: mx  |  co  |  es  |  br  |  de
+❌  Never store: .mx  |  MX  |  Mx  |  MEX  |  mexico  |  com.mx
+```
+
+| Task | How |
+|---|---|
+| Accept user or config input | Strip leading `.`, lowercase, validate against ISO 3166-1 |
+| Validate in TypeScript | `isValid(normalized)` from `i18n-iso-countries` |
+| Validate in Go | `countries.ByName(normalized) != countries.Unknown` |
+| Store in DB | `CHAR(2)`, enforce lowercase, index the column |
+| Assemble full domain | Do it in CDN/infra config, not in application code |
+| Add a new country | Validate ccTLD first, then update routing config before code |
+
+| Language | Approved package |
+|---|---|
+| Node.js / TypeScript | [`i18n-iso-countries`](https://www.npmjs.com/package/i18n-iso-countries) |
+| Go | [`github.com/biter777/countries`](https://pkg.go.dev/github.com/biter777/countries) |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
