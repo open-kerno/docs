@@ -1,0 +1,434 @@
+---
+sidebar_position: 21
+title: Location and Port Identification (UN/LOCODE)
+description: Engineering guide for identifying cities, ports, and international trade locations using the UN/LOCODE standard across all logistics and global operations data.
+author: CTO
+tags: [standards, logistics, un-locode, geo, ports, trade, normalization]
+---
+
+# Location and Port Identification (UN/LOCODE)
+
+> **From the CTO — Required reading for all logistics, operations, and platform engineering teams.**
+> A city named differently in every system is not a city — it is a data problem waiting to become an operational incident. Port and location data drives shipment routing, carrier selection, customs documentation, and cost calculation. One inconsistent identifier breaks all of them. UN/LOCODE is the international standard. We use it everywhere logistics data flows.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: UN/LOCODE](#the-standard-unlocode)
+3. [Code Structure and Format](#code-structure-and-format)
+4. [Reference Codes](#reference-codes)
+5. [Database Storage](#database-storage)
+6. [API Design](#api-design)
+7. [Validation](#validation)
+8. [When UN/LOCODE Does Not Cover a Location](#when-unlocode-does-not-cover-a-location)
+9. [Forbidden Patterns](#forbidden-patterns)
+10. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+### City names are ambiguous across systems
+
+**"New York", "New York City", "NYC", and "New York, NY" are four strings that mean one location.**
+When logistics data flows between your internal services, carriers, freight forwarders, customs brokers, and port authorities, each system may name the same location differently. Matching a shipment origin from one service to a port code in another requires a translation layer — and every translation layer introduces mapping bugs, maintenance cost, and silent failures when a new name variant appears.
+
+UN/LOCODE assigns a single, stable, five-character code to each location. `USNYC` always means the port of New York and New Jersey. No ambiguity. No mapping required.
+
+### Carrier and customs APIs require standard codes
+
+**International trade systems expect UN/LOCODE, not free text.**
+Freight booking APIs (ocean carriers, air cargo, customs brokers), vessel tracking systems, and customs clearance platforms identify ports and locations by their UN/LOCODE. Sending a city name to these APIs results in a rejection or a lookup failure. If your internal data stores a free-text city name, every outbound integration must perform a conversion at send time — and that conversion must be perfect every time.
+
+Storing UN/LOCODE internally means outbound integrations pass the value through directly. There is no conversion step, no mapping table to maintain, and no risk of sending a code that does not match the carrier's reference list.
+
+### Free text location data cannot be reliably aggregated
+
+**Reporting and analytics over free-text location fields is manual work.**
+A dashboard that answers "what is our shipment volume through the port of Barcelona this quarter?" requires that every shipment with origin or destination in Barcelona uses the same identifier. With free text, the same port appears as `"Barcelona"`, `"Barcelona Port"`, `"BCN"`, `"Puerto de Barcelona"`, and `"ESBCN"` — all in the same database. Aggregating accurately requires cleaning the data first, every time.
+
+With UN/LOCODE, the query is `WHERE origin_locode = 'ESBCN'`. Exact. Reliable. No cleaning required.
+
+> **Architectural warning:** Never derive a UN/LOCODE from a city name at query time. The conversion is not deterministic — multiple UN/LOCODE entries may map to the same city name, and city names change over time. Store the code at write time, validated against the UN/LOCODE dataset, and use it as the primary key for all location-based logic.
+
+---
+
+## The Standard: UN/LOCODE
+
+The **United Nations Code for Trade and Transport Locations (UN/LOCODE)** is a geographic coding scheme maintained by the United Nations Centre for Trade Facilitation and Electronic Business (UN/CEFACT). It assigns a unique five-character code to cities, ports, airports, rail terminals, and other trade-relevant locations worldwide.
+
+The current dataset contains over 103,000 locations across 249 countries and territories. It is updated twice per year (in May and November). The dataset is publicly available at [unece.org/trade/uncefact/unlocode](https://unece.org/trade/uncefact/unlocode).
+
+### When to use UN/LOCODE
+
+Use UN/LOCODE for any location that is:
+
+- A port of loading or discharge in a shipment
+- An origin or destination in a logistics or freight record
+- An airport, rail terminal, or intermodal facility in a transport chain
+- A trade hub referenced in a customs or compliance document
+- A city that must be exchangeable with a carrier, forwarder, or government system
+
+Do not use UN/LOCODE for street-level addresses. For full postal addresses, use the country and subdivision standards defined in the [Country and Subdivision Identification](./country-and-subdivision-standards.mdx) guide alongside a postal address format.
+
+---
+
+## Code Structure and Format
+
+### Format
+
+```
+{CC}{LOC}
+```
+
+| Part | Length | Description |
+|---|---|---|
+| `CC` | 2 characters | ISO 3166-1 alpha-2 country code, uppercase |
+| `LOC` | 3 characters | Location identifier assigned by UN/CEFACT, uppercase alphanumeric |
+
+Total: **5 characters**, always uppercase, no separator, no spaces.
+
+### Examples
+
+| Location | UN/LOCODE |
+|---|---|
+| New York (Port of New York and New Jersey), USA | `USNYC` |
+| Barcelona, Spain | `ESBCN` |
+| Bogotá, Colombia | `COBOG` |
+| London, United Kingdom | `GBLONB` — see note below |
+| Hamburg, Germany | `DEHAM` |
+| Rotterdam, Netherlands | `NLRTM` |
+| Shanghai, China | `CNSHA` |
+| Singapore | `SGSIN` |
+| Dubai, UAE | `AEDXB` |
+| Los Angeles, USA | `USLAX` |
+| Miami, USA | `USMIA` |
+| Medellín, Colombia | `COMED` |
+
+> **Note on length:** The standard specifies a 2+3 format (5 characters total). In practice, some entries in the official dataset use a 2+4 or 2+5 format for disambiguation within a country. Always store the exact code from the official dataset — do not truncate or pad.
+
+### Function codes
+
+Each UN/LOCODE entry also carries a set of function codes indicating what the location handles. These are informational and should be stored alongside the code when relevant to routing logic.
+
+| Function code | Meaning |
+|---|---|
+| `1` | Port |
+| `2` | Rail terminal |
+| `3` | Road terminal |
+| `4` | Airport |
+| `5` | Postal exchange |
+| `6` | Multimodal function |
+| `7` | Fixed transport |
+| `B` | Border crossing |
+
+A location may have multiple function codes. `USNYC` has functions `1 4 5 B` — port, airport, postal, and border crossing.
+
+---
+
+## Reference Codes
+
+### Major ports and trade hubs
+
+| Location | Country | UN/LOCODE | Primary function |
+|---|---|---|---|
+| Port of New York & New Jersey | USA | `USNYC` | Port |
+| Port of Los Angeles | USA | `USLAX` | Port |
+| Port of Miami | USA | `USMIA` | Port |
+| Port of Houston | USA | `USHOU` | Port |
+| Port of Seattle | USA | `USSEA` | Port |
+| Port of Barcelona | Spain | `ESBCN` | Port |
+| Port of Valencia | Spain | `ESVLC` | Port |
+| Port of Bilbao | Spain | `ESBIO` | Port |
+| Bogotá (El Dorado) | Colombia | `COBOG` | Airport, logistics hub |
+| Port of Barranquilla | Colombia | `COBAQ` | Port |
+| Port of Cartagena | Colombia | `COCTG` | Port |
+| Port of Buenaventura | Colombia | `COBUN` | Port |
+| Port of Rotterdam | Netherlands | `NLRTM` | Port |
+| Port of Hamburg | Germany | `DEHAM` | Port |
+| Port of Shanghai | China | `CNSHA` | Port |
+| Port of Singapore | Singapore | `SGSIN` | Port |
+| Port of Dubai | UAE | `AEDXB` | Port |
+
+---
+
+## Database Storage
+
+### Column definition
+
+```sql
+-- UN/LOCODE column — fixed minimum 5 characters, allow up to 6 for extended codes
+origin_locode      CHAR(5)  NOT NULL,
+destination_locode CHAR(5)  NOT NULL,
+
+-- If you must support extended codes from the official dataset
+origin_locode      VARCHAR(6) NOT NULL CHECK (origin_locode ~ '^[A-Z]{2}[A-Z0-9]{3,4}$'),
+```
+
+Use `CHAR(5)` for standard codes. If your dataset includes extended codes (2+4 characters) from the official UN/LOCODE source, use `VARCHAR(6)` with a format constraint.
+
+### PostgreSQL schema example
+
+```sql
+CREATE TABLE shipments (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  reference_number   TEXT NOT NULL,
+  origin_locode      VARCHAR(6) NOT NULL CHECK (origin_locode ~ '^[A-Z]{2}[A-Z0-9]{3,4}$'),
+  destination_locode VARCHAR(6) NOT NULL CHECK (destination_locode ~ '^[A-Z]{2}[A-Z0-9]{3,4}$'),
+  carrier_code       TEXT,
+  estimated_departure TIMESTAMPTZ,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_shipments_origin      ON shipments (origin_locode);
+CREATE INDEX idx_shipments_destination ON shipments (destination_locode);
+```
+
+Index both `origin_locode` and `destination_locode` — they are the primary filter keys in logistics queries.
+
+### Reference table for validated codes
+
+Maintain a `locations` reference table populated from the official UN/LOCODE dataset. Use a foreign key from shipment and order tables into this table to enforce validity at the database level.
+
+```sql
+CREATE TABLE locations (
+  locode        VARCHAR(6) PRIMARY KEY,
+  country_code  CHAR(2)    NOT NULL,  -- ISO 3166-1 alpha-2
+  name          TEXT       NOT NULL,
+  name_without_diacritics TEXT,
+  subdivision_code VARCHAR(6),        -- ISO 3166-2 where available
+  function_codes TEXT,                -- e.g. '1 4 5 B'
+  status        TEXT,                 -- 'AA' = approved, 'QQ' = to be removed
+  updated_at    DATE
+);
+
+-- Foreign key enforcement on shipments
+ALTER TABLE shipments
+  ADD CONSTRAINT fk_origin_locode
+    FOREIGN KEY (origin_locode) REFERENCES locations (locode),
+  ADD CONSTRAINT fk_destination_locode
+    FOREIGN KEY (destination_locode) REFERENCES locations (locode);
+```
+
+Populate the `locations` table from the UN/CEFACT CSV dataset, updated on each bi-annual release (May and November).
+
+---
+
+## API Design
+
+### Request and response shapes
+
+All API fields that identify a logistics location must use UN/LOCODE.
+
+```json
+// ✅ Correct — UN/LOCODE in the payload
+{
+  "shipment": {
+    "referenceNumber": "SHP-2024-00142",
+    "originLocode": "USNYC",
+    "destinationLocode": "ESBCN",
+    "estimatedDeparture": "2024-03-15T08:00:00Z"
+  }
+}
+
+// ❌ Forbidden — free text city names or internal codes
+{
+  "shipment": {
+    "referenceNumber": "SHP-2024-00142",
+    "origin": "New York",
+    "destination": "Barcelona",
+    "estimatedDeparture": "2024-03-15T08:00:00Z"
+  }
+}
+```
+
+### Field naming
+
+Use the `Locode` suffix on all fields carrying a UN/LOCODE value. This makes the format explicit to API consumers.
+
+| Field | Type | Format |
+|---|---|---|
+| `originLocode` | `string` | UN/LOCODE, 5–6 uppercase alphanumeric characters |
+| `destinationLocode` | `string` | UN/LOCODE |
+| `transitLocodes` | `string[]` | Ordered list of UN/LOCODEs for intermediate stops |
+| `portLocode` | `string` | UN/LOCODE for a single port context |
+
+### Returning location detail
+
+When an API returns location data, include both the code and the display name. The code is the identifier; the name is for display only and must not be used as a key.
+
+```json
+// ✅ Code is the key; name is presentation
+{
+  "origin": {
+    "locode": "USNYC",
+    "name": "New York",
+    "countryCode": "US",
+    "subdivisionCode": "US-NY"
+  }
+}
+```
+
+---
+
+## Validation
+
+Validate UN/LOCODE values at the API boundary against the official dataset. A code that matches the format regex but does not exist in the dataset must be rejected.
+
+### Format validation (TypeScript / Zod)
+
+```typescript
+import { z } from 'zod';
+
+// ponytail: format-only check; pair with dataset lookup for full validation
+const LOCODE_REGEX = /^[A-Z]{2}[A-Z0-9]{3,4}$/;
+
+export const locodeSchema = z
+  .string()
+  .regex(LOCODE_REGEX, 'Must be a valid UN/LOCODE (e.g. USNYC, ESBCN)');
+```
+
+### Dataset validation
+
+Format alone is not sufficient. `USZZZ` matches the regex but does not exist in the UN/LOCODE dataset. Validate against the loaded dataset.
+
+```typescript
+import validLocodes from './data/unlocode-index.json'; // generated from official CSV
+
+// validLocodes is a Set<string> built from the official UN/LOCODE CSV at startup
+export function isValidLocode(code: string): boolean {
+  return validLocodes.has(code);
+}
+
+// In a Zod schema with dataset validation
+export const locodeSchema = z
+  .string()
+  .regex(LOCODE_REGEX, 'Must be a valid UN/LOCODE format')
+  .refine(isValidLocode, 'UN/LOCODE not found in the official dataset');
+```
+
+### Building the validation index
+
+```typescript
+// scripts/build-locode-index.ts
+// Run during build or on each bi-annual UN/LOCODE release
+import { parse } = from 'csv-parse/sync';
+import fs from 'fs';
+
+const csv = fs.readFileSync('./data/2024-1 UNLOCODE CodeListPart1.csv');
+const rows = parse(csv, { columns: true });
+
+const index = new Set(
+  rows
+    .filter((r: any) => r['LOCODE'] && r['Status'] !== 'QQ') // exclude 'to be removed'
+    .map((r: any) => (r['Country'] + r['Location']).trim())
+);
+
+fs.writeFileSync('./data/unlocode-index.json', JSON.stringify([...index]));
+```
+
+Update the index on every UN/LOCODE bi-annual release and redeploy. Pin the dataset version in your repository so you know exactly which release is in use.
+
+---
+
+## When UN/LOCODE Does Not Cover a Location
+
+Not every location in a logistics workflow has a UN/LOCODE. Small inland depots, private warehouses, and new facilities may not yet be in the dataset, or may have a status of `RQ` (requested but not yet assigned).
+
+### Handling unregistered locations
+
+1. **Check the dataset first.** Many locations appear under a nearby city or hub — check before concluding no code exists.
+2. **If no code exists:** store the parent UN/LOCODE for the nearest significant hub plus a structured free-text field for the specific facility. Do not store a made-up code.
+3. **Submit to UN/CEFACT.** If the location is significant to your operations, submit a request through the UN/CEFACT official process to have it added. New codes are assigned in each bi-annual update.
+
+```json
+// ✅ Unregistered facility — nearest hub code + free-text supplement
+{
+  "location": {
+    "locode": "USNYC",
+    "facilityName": "ABC Logistics Depot — Newark Industrial Park",
+    "facilityAddress": "123 Industrial Blvd, Newark, NJ 07102, US"
+  }
+}
+
+// ❌ Made-up code — never do this
+{
+  "location": {
+    "locode": "USNWK",  // not in the official dataset
+    "facilityName": "ABC Logistics Depot"
+  }
+}
+```
+
+---
+
+## Forbidden Patterns
+
+| Pattern | Why it is forbidden | Use instead |
+|---|---|---|
+| Free-text city name as a location key | Ambiguous, not machine-comparable | UN/LOCODE |
+| Internal or invented location codes | Not recognised by carriers or customs systems | UN/LOCODE from official dataset |
+| IATA airport codes as a general location key | Covers airports only, not ports or rail | UN/LOCODE (which includes airports) |
+| Port names without a standard code | Spelling varies across systems and languages | UN/LOCODE |
+| Country + city composite string (`"US:New York"`) | Not a recognised standard, fragile to city name changes | UN/LOCODE |
+| Storing UN/LOCODE without dataset validation | Invalid or retired codes enter the database | Validate against the official dataset on input |
+| Using retired or `QQ`-status codes | Codes marked for removal are invalid in current systems | Validate `status != QQ` when loading the dataset |
+
+### Auditing your codebase
+
+```bash
+# Find fields storing city or port as free text
+grep -rn '"city":\|"port":\|"origin":\|"destination":' src/ --include="*.ts" | grep -v "Locode\|locode\|Code"
+
+# Find IATA codes used as location identifiers (3-letter codes without country prefix)
+grep -rn '"[A-Z]{3}"' src/ --include="*.ts" | grep -i "port\|airport\|origin\|destination"
+
+# Find format-only locode validation without dataset check
+grep -rn "LOCODE_REGEX\|locode.*regex\|locode.*pattern" src/ --include="*.ts"
+```
+
+---
+
+## Quick Reference
+
+```typescript
+// ✅ Format validation
+const LOCODE_REGEX = /^[A-Z]{2}[A-Z0-9]{3,4}$/;
+LOCODE_REGEX.test('USNYC');   // true
+LOCODE_REGEX.test('ESBCN');   // true
+LOCODE_REGEX.test('NYC');     // false — missing country prefix
+LOCODE_REGEX.test('US NYC');  // false — no spaces
+
+// ✅ Dataset validation
+isValidLocode('USNYC');  // true
+isValidLocode('USZZZ');  // false — not in official dataset
+
+// ✅ API payload
+{ "originLocode": "USNYC", "destinationLocode": "ESBCN" }
+
+// ✅ Location detail in response
+{ "locode": "USNYC", "name": "New York", "countryCode": "US", "subdivisionCode": "US-NY" }
+
+// ❌ Forbidden
+{ "origin": "New York", "destination": "Barcelona" }
+{ "originLocode": "NYC" }      // missing country prefix
+{ "originLocode": "USZZZ" }    // not in official dataset
+{ "originLocode": "us-nyc" }   // lowercase — always uppercase
+```
+
+| Task | How |
+|---|---|
+| Store a port or logistics city | UN/LOCODE, `VARCHAR(6)`, uppercase, validated against official dataset |
+| Validate a UN/LOCODE | Format regex + dataset lookup (`isValidLocode()`) |
+| Display a location name | Store `name` from the official dataset; return alongside `locode` in API responses |
+| Identify an airport in a logistics context | UN/LOCODE (not IATA code) — UN/LOCODE covers airports with the `4` function code |
+| Handle a location not in the dataset | Use nearest hub UN/LOCODE + free-text `facilityName` field |
+| Keep the dataset current | Update from the official UN/CEFACT CSV on each bi-annual release (May, November) |
+| Enforce validity at the database level | Foreign key from shipment table into a `locations` reference table |
+| Filter shipments by port | `WHERE origin_locode = 'USNYC'` — index on both `origin_locode` and `destination_locode` |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
