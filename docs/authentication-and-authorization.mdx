@@ -1,0 +1,391 @@
+---
+sidebar_position: 9
+title: Authentication and Authorization
+description: Engineering guide for session management, JWT, OAuth 2.0, and SAML across all services and third-party integrations.
+author: CTO
+tags: [standards, security, authentication, authorization, jwt, oauth2, saml]
+---
+
+# Authentication and Authorization
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> Authentication and authorization are not features. They are the foundation of every system we build. Get them wrong and everything above them is compromised.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard at a Glance](#the-standard-at-a-glance)
+3. [Session Management: JWT](#session-management-jwt)
+4. [Third-Party Integrations: OAuth 2.0](#third-party-integrations-oauth-20)
+5. [Enterprise SSO: SAML 2.0](#enterprise-sso-saml-20)
+6. [Authorization: Roles and Permissions](#authorization-roles-and-permissions)
+7. [Forbidden Patterns](#forbidden-patterns)
+8. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+Authentication confirms who a user is. Authorization confirms what they can do. Both fail more often than teams expect, and the consequences are severe.
+
+### Sessions get hijacked
+
+**Weak or long-lived tokens are a permanent backdoor.**
+A JWT signed with a weak secret, a token that never expires, or a token stored in `localStorage` (accessible to any JavaScript on the page) gives an attacker permanent access to a user's account — even after the user changes their password. Unlike a database breach, a stolen token leaves no trace in your application logs.
+
+### Integrations break under real-world conditions
+
+**Homebrew OAuth flows have subtle bugs.**
+OAuth 2.0 has specific states, redirects, and token exchanges. Teams that implement their own flows frequently miss the `state` parameter (CSRF on the redirect), skip PKCE on public clients (auth code interception), or store `access_token` in a cookie without `HttpOnly` (XSS exposure). These bugs do not appear in testing. They appear when an attacker looks for them.
+
+### Authorization is checked inconsistently
+
+**Missing a single check exposes the resource.**
+Authorization logic scattered across controllers, services, and middleware leads to gaps. One endpoint that forgets to check a role, one API route that assumes the frontend will restrict access — these are horizontal privilege escalation vulnerabilities. They are the most common class of auth bug in production systems.
+
+> **Architectural warning:** Never implement custom authentication protocols. Do not write your own session tokens, your own OAuth server, or your own SAML parser. Use the approved libraries listed in this guide. The attack surface of a homebrew auth system is always larger than the team expects.
+
+---
+
+## The Standard at a Glance
+
+| Use case | Protocol | Notes |
+|---|---|---|
+| User sessions (first-party) | JWT (RS256) | Short-lived access token + rotating refresh token |
+| Third-party login / API access | OAuth 2.0 (Authorization Code + PKCE) | PKCE required for all public clients |
+| Enterprise SSO | SAML 2.0 | SP-initiated flow only |
+| Service-to-service (internal) | mTLS + short-lived JWT | See [Encryption Standards](./encryption-standards.mdx) for mTLS |
+| Password storage | `bcrypt` / `argon2` | Never encrypt passwords — hash them |
+
+---
+
+## Session Management: JWT
+
+JSON Web Tokens are the standard for first-party user sessions. A JWT is a signed, self-contained token that encodes the user's identity and claims.
+
+### Algorithm: RS256, not HS256
+
+We sign JWTs with **RS256** (asymmetric RSA + SHA-256). The private key signs the token; the public key verifies it. Services that only need to verify a token never touch the private key.
+
+**Do not use HS256** (symmetric HMAC). HS256 uses a single shared secret — any service that verifies a token can also forge one. This is unacceptable in a multi-service architecture.
+
+| Algorithm | Key type | Who can forge a token? | Status |
+|---|---|---|---|
+| RS256 | RSA key pair | Only the holder of the private key | **Required** |
+| ES256 | EC key pair | Only the holder of the private key | Allowed |
+| HS256 | Shared secret | Any verifier | **Forbidden** |
+
+### Token structure
+
+| Claim | Value | Notes |
+|---|---|---|
+| `sub` | User ID | Opaque identifier — not email or username |
+| `iss` | Service URL | e.g. `https://auth.open-kerno.com` |
+| `aud` | Target service | e.g. `https://api.open-kerno.com` |
+| `exp` | Unix timestamp | Access token: 15 minutes max |
+| `iat` | Unix timestamp | When the token was issued |
+| `jti` | UUID | Unique token ID — required for revocation |
+
+### Token lifetime and refresh
+
+Short-lived access tokens are non-negotiable. A 15-minute window limits the blast radius of a stolen token.
+
+| Token type | Lifetime | Storage |
+|---|---|---|
+| Access token | 15 minutes | Memory only (not `localStorage`, not a cookie) |
+| Refresh token | 7 days, rotating | `HttpOnly`, `Secure`, `SameSite=Strict` cookie |
+
+**Rotating refresh tokens:** each use of a refresh token issues a new refresh token and invalidates the previous one. If the old token is used again (replay attack), revoke the entire refresh token family immediately.
+
+```typescript
+// ✅ Correct — RS256, short expiry, required claims
+import jwt from 'jsonwebtoken';
+import fs from 'fs';
+
+const privateKey = fs.readFileSync('./keys/private.pem');
+
+const accessToken = jwt.sign(
+  { sub: userId, aud: 'https://api.open-kerno.com', jti: crypto.randomUUID() },
+  privateKey,
+  { algorithm: 'RS256', expiresIn: '15m', issuer: 'https://auth.open-kerno.com' }
+);
+
+// ❌ Wrong — HS256 with a hardcoded secret
+const token = jwt.sign({ userId }, 'my-secret', { algorithm: 'HS256' });
+```
+
+### Verification
+
+Every service that accepts a JWT must verify all of the following:
+
+1. **Signature** — using the public key, not by skipping verification.
+2. **`exp`** — token is not expired.
+3. **`iss`** — token comes from our auth service.
+4. **`aud`** — token is intended for this service.
+
+```typescript
+// ✅ Correct — full verification
+const publicKey = fs.readFileSync('./keys/public.pem');
+
+const payload = jwt.verify(token, publicKey, {
+  algorithms: ['RS256'],
+  issuer: 'https://auth.open-kerno.com',
+  audience: 'https://api.open-kerno.com',
+});
+
+// ❌ Wrong — skipping algorithm enforcement
+const payload = jwt.verify(token, publicKey); // allows algorithm confusion attacks
+```
+
+> **Rule:** Never call `jwt.decode()` for authorization decisions. `decode()` does not verify the signature. Use `jwt.verify()` always.
+
+---
+
+## Third-Party Integrations: OAuth 2.0
+
+OAuth 2.0 is the protocol for delegated authorization — letting users grant our application access to their data on another service (Google, GitHub, Slack) without sharing their password.
+
+### Required flow: Authorization Code + PKCE
+
+We use the **Authorization Code flow with PKCE** (Proof Key for Code Exchange) for all OAuth integrations. PKCE is required for any client that cannot securely store a client secret — this includes SPAs and mobile apps, but we apply it universally as a defense-in-depth measure.
+
+**Do not use:**
+- Implicit flow — deprecated in OAuth 2.1, returns tokens in the URL fragment.
+- Client Credentials flow for user-facing logins — it is for machine-to-machine, not users.
+- Resource Owner Password Credentials (ROPC) — requires the user to hand over their password to your app.
+
+### PKCE flow
+
+```
+1. Generate a random `code_verifier` (43–128 chars, URL-safe)
+2. Compute `code_challenge` = BASE64URL(SHA256(code_verifier))
+3. Send user to the provider's authorization URL with:
+   - `response_type=code`
+   - `client_id`
+   - `redirect_uri`
+   - `scope`
+   - `state` (random, stored in session — CSRF protection)
+   - `code_challenge`
+   - `code_challenge_method=S256`
+4. Provider redirects back with `code` and `state`
+5. Verify `state` matches what you stored
+6. Exchange `code` + `code_verifier` for tokens at the token endpoint
+7. Store `access_token` in memory; store `refresh_token` in HttpOnly cookie
+```
+
+```typescript
+// ✅ PKCE — generate verifier and challenge
+import crypto from 'crypto';
+
+function generatePKCE() {
+  const verifier = crypto.randomBytes(64).toString('base64url');
+  const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+  return { verifier, challenge };
+}
+
+// Store verifier in server-side session before redirect
+// Send challenge + method=S256 in the authorization URL
+```
+
+### State parameter — mandatory
+
+The `state` parameter prevents CSRF on the OAuth redirect. Generate a random value, store it server-side (session or signed cookie), and reject any callback where `state` does not match.
+
+```typescript
+// ✅ Generate and validate state
+const state = crypto.randomBytes(16).toString('hex');
+session.oauthState = state; // store before redirect
+
+// On callback:
+if (req.query.state !== session.oauthState) {
+  throw new Error('OAuth state mismatch — possible CSRF');
+}
+```
+
+### Token storage
+
+| Token | Storage |
+|---|---|
+| `access_token` | In-memory only. Never `localStorage`. |
+| `refresh_token` | `HttpOnly`, `Secure`, `SameSite=Strict` cookie |
+| `client_secret` | AWS Secrets Manager — never in code or `.env` committed to git |
+
+---
+
+## Enterprise SSO: SAML 2.0
+
+SAML 2.0 is the protocol for enterprise single sign-on. Enterprises connect their identity provider (Okta, Azure AD, Google Workspace) to our service provider.
+
+### SP-initiated flow only
+
+We support **Service Provider (SP) initiated** flows. The user starts at our login page, we redirect to their IdP, and they return with a signed assertion. We do not support IdP-initiated flows — they are harder to secure against open redirect and CSRF attacks.
+
+### Assertion validation — mandatory steps
+
+Every SAML response must pass all of the following checks before the user is authenticated:
+
+| Check | What to verify |
+|---|---|
+| Signature | Response and/or Assertion signed by the IdP's certificate |
+| Certificate | IdP certificate matches the one registered during setup |
+| `Conditions.NotBefore` / `NotOnOrAfter` | Assertion is within its valid time window |
+| `AudienceRestriction` | Audience matches our entity ID |
+| `InResponseTo` | Matches the `ID` from the `AuthnRequest` we sent (replay prevention) |
+| `Destination` | Matches our ACS URL exactly |
+
+```typescript
+// ✅ Use a maintained SAML library — do not parse XML manually
+import { ServiceProvider, IdentityProvider } from 'samlify';
+
+const sp = ServiceProvider({ entityID: 'https://app.open-kerno.com', ... });
+const idp = IdentityProvider({ metadata: idpMetadataXml });
+
+const { extract } = await sp.parseLoginResponse(idp, 'post', req);
+// samlify validates signature, time window, audience, and InResponseTo
+```
+
+> **Architectural warning:** Never parse SAML XML manually with a generic XML parser. XML signature validation has subtle implementation requirements (exclusive canonicalization, enveloped signature transform). Use a maintained library that has been audited for XXE and signature-wrapping attacks.
+
+### Attribute mapping
+
+Map IdP attributes to internal user fields explicitly. Do not trust unverified attributes for authorization decisions.
+
+| IdP attribute | Internal field | Notes |
+|---|---|---|
+| `NameID` | `user.samlId` | Persistent identifier — use as the primary key |
+| `email` | `user.email` | Treat as display only, not as a login key |
+| `groups` | Mapped to roles | Map IdP groups to our roles at provisioning time |
+
+---
+
+## Authorization: Roles and Permissions
+
+Authentication tells us who the user is. Authorization tells us what they can do. These are separate concerns and must be handled separately.
+
+### Role-based access control (RBAC)
+
+Define roles at the application level. Roles are sets of permissions. Users are assigned roles. Permissions are checked at the resource level.
+
+| Role | Example permissions |
+|---|---|
+| `viewer` | `read:reports`, `read:dashboard` |
+| `editor` | `read:*`, `write:reports`, `write:content` |
+| `admin` | `read:*`, `write:*`, `delete:*`, `manage:users` |
+| `service` | Specific API permissions only — no user-facing resources |
+
+### Where to check permissions
+
+Authorization checks belong in the **service layer**, not only in middleware or the frontend.
+
+```typescript
+// ✅ Check at the service layer — the source of truth
+async function deleteReport(userId: string, reportId: string) {
+  const user = await getUser(userId);
+  if (!user.permissions.includes('delete:reports')) {
+    throw new ForbiddenError('Insufficient permissions');
+  }
+  return reportRepository.delete(reportId);
+}
+
+// ❌ Wrong — checking only in the route handler
+router.delete('/reports/:id', requireRole('admin'), handler);
+// If the same logic is called from another path, the check is skipped
+```
+
+### Never trust client-supplied roles
+
+Role and permission data must come from your own database or the verified JWT payload — not from the request body, query string, or any client-supplied header.
+
+```typescript
+// ❌ Wrong — role from request body
+const { role } = req.body;
+if (role === 'admin') { ... }
+
+// ✅ Correct — role from verified JWT
+const { sub } = jwt.verify(token, publicKey, { algorithms: ['RS256'] });
+const user = await db.users.findById(sub);
+if (user.role === 'admin') { ... }
+```
+
+---
+
+## Forbidden Patterns
+
+These patterns are blocked at code review. Finding one in existing code is a required remediation item.
+
+| Pattern | Why it is forbidden | Use instead |
+|---|---|---|
+| `jwt.decode()` for auth decisions | Does not verify signature | `jwt.verify()` with full options |
+| HS256 JWT signing | Any verifier can forge tokens | RS256 or ES256 |
+| OAuth Implicit flow | Token in URL fragment — visible in logs and history | Authorization Code + PKCE |
+| ROPC (password grant) | User hands their password to your app | Authorization Code + PKCE |
+| Storing tokens in `localStorage` | Accessible to any JS (XSS) | Memory for access token; `HttpOnly` cookie for refresh |
+| Tokens with `exp` > 24 hours (access) | Limits revocation options | 15 minutes max |
+| Homebrew session tokens | Weak randomness, timing attacks, no revocation | Use JWT with the approved library |
+| Parsing SAML XML manually | XXE and signature-wrapping attacks | Use `samlify` or equivalent |
+| IdP-initiated SAML | Open redirect and CSRF risks | SP-initiated only |
+| Trusting client-supplied roles | Privilege escalation | Read from database / JWT only |
+
+### Auditing your codebase
+
+```bash
+# Find jwt.decode() used for auth decisions
+grep -rn "jwt\.decode\b" src/ --include="*.ts"
+
+# Find HS256 usage
+grep -rn "HS256\|algorithm.*hs256" src/ --include="*.ts" -i
+
+# Find localStorage token storage
+grep -rn "localStorage.*[Tt]oken\|localStorage.*[Aa]ccess" src/ --include="*.ts"
+
+# Find Implicit flow (response_type=token)
+grep -rn "response_type.*token\b" src/ --include="*.ts"
+```
+
+---
+
+## Quick Reference
+
+```typescript
+// JWT — sign (RS256, 15m)
+const token = jwt.sign(
+  { sub: userId, jti: crypto.randomUUID(), aud: 'https://api.open-kerno.com' },
+  privateKey,
+  { algorithm: 'RS256', expiresIn: '15m', issuer: 'https://auth.open-kerno.com' }
+);
+
+// JWT — verify (full validation)
+const payload = jwt.verify(token, publicKey, {
+  algorithms: ['RS256'],
+  issuer: 'https://auth.open-kerno.com',
+  audience: 'https://api.open-kerno.com',
+});
+
+// OAuth PKCE — generate challenge
+const verifier = crypto.randomBytes(64).toString('base64url');
+const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+
+// ✅ access_token → memory only
+// ✅ refresh_token → HttpOnly, Secure, SameSite=Strict cookie
+// ✅ client_secret → AWS Secrets Manager
+// ✅ SAML → samlify, SP-initiated, validate all assertion fields
+
+// ❌ jwt.decode() for auth | HS256 | localStorage | Implicit flow | ROPC
+```
+
+| Task | Standard |
+|---|---|
+| User session token | JWT, RS256, 15 min access + 7 day rotating refresh |
+| Verify a JWT | `jwt.verify()` with `algorithms`, `issuer`, `audience` |
+| Third-party login (Google, GitHub) | OAuth 2.0 Authorization Code + PKCE |
+| Enterprise SSO | SAML 2.0, SP-initiated, `samlify` |
+| Store access token | Memory only |
+| Store refresh token | `HttpOnly` + `Secure` + `SameSite=Strict` cookie |
+| Store client secret | AWS Secrets Manager |
+| Check permissions | Service layer, from DB or verified JWT — never from client |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
