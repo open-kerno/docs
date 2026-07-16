@@ -1,0 +1,470 @@
+---
+sidebar_position: 20
+title: Country and Subdivision Identification (ISO 3166)
+description: Engineering guide for storing and exchanging country and regional subdivision codes using ISO 3166-1 alpha-2 and ISO 3166-2 across all services and databases.
+author: CTO
+tags: [standards, geo, iso-3166, country-codes, normalization, internationalization]
+---
+
+# Country and Subdivision Identification (ISO 3166)
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> Every service that stores an address, applies a tax rule, routes a shipment, or restricts access by geography depends on country and region data. If each service uses a different format — free text, a local abbreviation, a numeric code — that data cannot be reliably joined, compared, or exchanged. ISO 3166 is the universal standard. We use it everywhere, without exception.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: ISO 3166 Codes](#the-standard-iso-3166-codes)
+3. [ISO 3166-1: Country Codes](#iso-3166-1-country-codes)
+4. [ISO 3166-2: Subdivision Codes](#iso-3166-2-subdivision-codes)
+5. [Database Storage](#database-storage)
+6. [API Design](#api-design)
+7. [Official Tooling](#official-tooling)
+8. [Validation](#validation)
+9. [Forbidden Patterns](#forbidden-patterns)
+10. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+### Free text country and region names break integrations
+
+**"United States", "USA", "US", "Estados Unidos" are four strings that mean one thing.**
+When services store country and region as free text — or as whatever the user typed — joining data across services becomes a manual mapping exercise. A shipping service that stores `"United States"` cannot directly match an order from a tax service that stores `"USA"`. An analytics pipeline that receives both must deduplicate before it can aggregate. Every integration adds friction; every mapping is a source of bugs.
+
+A single, enforced code standard means every system speaks the same language. `US` always means the United States. `US-CA` always means California. No mapping required.
+
+### Inconsistent formats silently corrupt business logic
+
+**Tax rates, shipping zones, and compliance rules are keyed by geography.**
+A tax rule that applies to `"New York"` does not match a record stored as `"NY"` or `"New York State"`. A shipping carrier integration that expects `"CA"` for California will fail when it receives `"California"`. These failures are often silent — the logic runs without error and applies the wrong rule or skips the rule entirely. The financial and compliance impact can be significant before anyone notices.
+
+### Historical codes break data pipelines when not handled
+
+**ISO 3166 retires codes when countries change.**
+Codes like `CS` (former Serbia and Montenegro) and `AN` (former Netherlands Antilles) no longer exist in the current standard. A service that accepts arbitrary two-letter strings without validation can store retired codes that no current API or partner system will recognise. Data stored today must be readable and valid in five years.
+
+> **Architectural warning:** Never store country or subdivision as a display name, a local abbreviation, or an unconstrained string. Accept a code, validate it against the current ISO 3166 list, store the code, and derive the display name at render time. The code is the data; the name is presentation.
+
+---
+
+## The Standard: ISO 3166 Codes
+
+| Data | Standard | Format | Example |
+|---|---|---|---|
+| Country | ISO 3166-1 alpha-2 | Two uppercase letters | `US`, `ES`, `CO`, `GB`, `DE` |
+| Subdivision (state, province, region) | ISO 3166-2 | Country code + hyphen + subdivision code | `US-NY`, `ES-B`, `CO-DC`, `GB-ENG` |
+
+**Do not use:**
+
+| Format | Example | Why not |
+|---|---|---|
+| ISO 3166-1 alpha-3 | `USA`, `ESP` | Three-letter codes; alpha-2 is the universal default |
+| ISO 3166-1 numeric | `840` | Numeric; used in financial systems only (e.g. ISO 4217 context) |
+| Free text country name | `"United States"` | Not machine-comparable, language-dependent |
+| Local abbreviation | `"NY"`, `"CAT"` | Ambiguous without country prefix |
+| FIPS codes | `"US06"` | US-only standard, not internationally recognised |
+
+---
+
+## ISO 3166-1: Country Codes
+
+ISO 3166-1 alpha-2 is the two-letter country code maintained by the ISO. It is the same set of codes used by internet top-level domains, currency systems (ISO 4217), and language tags (BCP 47).
+
+### Reference codes
+
+| Country | Alpha-2 code |
+|---|---|
+| United States | `US` |
+| Spain | `ES` |
+| Colombia | `CO` |
+| United Kingdom | `GB` |
+| Germany | `DE` |
+| Mexico | `MX` |
+| Brazil | `BR` |
+| Canada | `CA` |
+| France | `FR` |
+| Argentina | `AR` |
+
+The full list of 249 current codes is maintained by the ISO and available through the libraries listed in [Official Tooling](#official-tooling). Do not hardcode the full list — use a library that stays current with ISO updates.
+
+### Format rules
+
+- Always two uppercase ASCII letters.
+- Store and transmit as uppercase. Normalise to uppercase on input before validation.
+- `GB` is the code for the United Kingdom, not `UK`. `UK` is not an ISO 3166-1 alpha-2 code.
+- `EU` is not a country code. The European Union does not have an ISO 3166-1 alpha-2 code.
+
+---
+
+## ISO 3166-2: Subdivision Codes
+
+ISO 3166-2 codes identify states, provinces, regions, departments, and other first-level subdivisions within a country. The format is always the ISO 3166-1 alpha-2 country code, a hyphen, and the subdivision identifier assigned by ISO.
+
+### Format
+
+```
+{alpha-2}-{subdivision}
+```
+
+The subdivision part varies in length and format by country. It may be letters, numbers, or a combination.
+
+### Reference codes by country
+
+#### United States (US)
+
+| Subdivision | ISO 3166-2 code |
+|---|---|
+| New York | `US-NY` |
+| California | `US-CA` |
+| Texas | `US-TX` |
+| Florida | `US-FL` |
+| Washington | `US-WA` |
+
+#### Spain (ES)
+
+| Subdivision | ISO 3166-2 code |
+|---|---|
+| Barcelona (province) | `ES-B` |
+| Madrid (community) | `ES-MD` |
+| Catalonia (community) | `ES-CT` |
+| Andalusia (community) | `ES-AN` |
+| Valencia (community) | `ES-VC` |
+
+#### Colombia (CO)
+
+| Subdivision | ISO 3166-2 code |
+|---|---|
+| Bogotá D.C. | `CO-DC` |
+| Antioquia | `CO-ANT` |
+| Valle del Cauca | `CO-VAC` |
+| Cundinamarca | `CO-CUN` |
+| Atlántico | `CO-ATL` |
+
+#### United Kingdom (GB)
+
+| Subdivision | ISO 3166-2 code |
+|---|---|
+| England | `GB-ENG` |
+| Scotland | `GB-SCT` |
+| Wales | `GB-WLS` |
+| Northern Ireland | `GB-NIR` |
+
+### Format rules
+
+- Always store the full code including the country prefix: `US-NY`, not `NY`.
+- The subdivision part is case-sensitive — it is defined by ISO per country. Most are uppercase letters or numbers. Store exactly as defined.
+- Do not invent subdivision codes. If the subdivision is not in the ISO list, store the country code only and record the free-text subdivision in a separate, non-keyed field for display purposes.
+
+---
+
+## Database Storage
+
+### Column types
+
+| Field | Type | Constraint |
+|---|---|---|
+| `country_code` | `CHAR(2)` | `NOT NULL`, `CHECK (country_code ~ '^[A-Z]{2}$')` |
+| `subdivision_code` | `VARCHAR(6)` | Nullable, `CHECK (subdivision_code ~ '^[A-Z]{2}-[A-Z0-9]{1,3}$')` |
+
+Use `CHAR(2)` for country codes — the length is always exactly two characters. Use `VARCHAR(6)` for subdivision codes — the total length varies by country (e.g. `US-NY` is 5 characters, `CO-ANT` is 6).
+
+### PostgreSQL schema example
+
+```sql
+CREATE TABLE addresses (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  street_line_1 TEXT NOT NULL,
+  street_line_2 TEXT,
+  city          TEXT NOT NULL,
+  postal_code   TEXT,
+  country_code  CHAR(2)     NOT NULL CHECK (country_code ~ '^[A-Z]{2}$'),
+  subdivision_code VARCHAR(6) CHECK (
+    subdivision_code IS NULL
+    OR subdivision_code ~ '^[A-Z]{2}-[A-Z0-9]{1,3}$'
+  ),
+  -- Enforce that subdivision_code starts with country_code
+  CONSTRAINT subdivision_matches_country CHECK (
+    subdivision_code IS NULL
+    OR starts_with(subdivision_code, country_code || '-')
+  )
+);
+```
+
+The `subdivision_matches_country` constraint catches data errors where a subdivision code is stored with a mismatched country (e.g. `country_code = 'US'` and `subdivision_code = 'ES-MD'`).
+
+### Do not store the display name
+
+Store the code. Derive the display name at render time using a library.
+
+```typescript
+// ✅ Store the code; derive the name at display time
+const country = { code: 'US' }; // stored
+const displayName = new Intl.DisplayNames(['en'], { type: 'region' }).of('US'); // → "United States"
+
+// ❌ Store the name — it cannot be reliably compared or joined
+const country = { name: 'United States' };
+```
+
+---
+
+## API Design
+
+### Request and response shapes
+
+Country and subdivision fields in all API payloads must use ISO codes, not display names.
+
+```json
+// ✅ Correct — ISO codes in the payload
+{
+  "address": {
+    "streetLine1": "123 Main St",
+    "city": "New York",
+    "postalCode": "10001",
+    "countryCode": "US",
+    "subdivisionCode": "US-NY"
+  }
+}
+
+// ❌ Forbidden — free text country and region
+{
+  "address": {
+    "streetLine1": "123 Main St",
+    "city": "New York",
+    "postalCode": "10001",
+    "country": "United States",
+    "state": "New York"
+  }
+}
+```
+
+### Field naming
+
+| Field | Type | Format |
+|---|---|---|
+| `countryCode` | `string` | ISO 3166-1 alpha-2, two uppercase letters |
+| `subdivisionCode` | `string \| null` | ISO 3166-2, full code including country prefix |
+
+Do not use generic names like `country`, `state`, or `region` without the `Code` suffix when the field carries a code value. The suffix signals to the consumer that the value is a code, not a display name.
+
+### Frontend: display name from code
+
+The frontend receives codes from the API and resolves display names using the browser's built-in `Intl.DisplayNames` API. Do not send the display name from the server.
+
+```typescript
+// ✅ Resolve display name from code on the client
+const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
+
+regionNames.of('US');    // → "United States"
+regionNames.of('ES');    // → "Spain"
+regionNames.of('CO');    // → "Colombia"
+```
+
+`Intl.DisplayNames` supports locale-aware display names. Pass the user's locale (`navigator.language`) instead of `'en'` to show names in the user's language.
+
+```typescript
+// ✅ Locale-aware display name
+const names = new Intl.DisplayNames([navigator.language], { type: 'region' });
+names.of('CO'); // → "Colombia" in English, "Colombie" in French
+```
+
+For subdivision display names, `Intl.DisplayNames` does not cover all ISO 3166-2 codes. Use the `i18n-iso-countries` or `subdivisions.js` library for full subdivision name resolution.
+
+---
+
+## Official Tooling
+
+### Node.js / TypeScript
+
+```bash
+npm install --save-exact i18n-iso-countries
+```
+
+`i18n-iso-countries` provides the full ISO 3166-1 country list with alpha-2 codes, alpha-3 codes, and localised names. It is maintained and updated when ISO publishes changes.
+
+```typescript
+import countries from 'i18n-iso-countries';
+import enLocale from 'i18n-iso-countries/langs/en.json';
+
+countries.registerLocale(enLocale);
+
+// Validate a country code
+countries.isValid('US');   // → true
+countries.isValid('XX');   // → false
+countries.isValid('uk');   // → false — case-sensitive
+
+// Get display name from code
+countries.getName('US', 'en');  // → "United States"
+countries.getName('ES', 'en');  // → "Spain"
+
+// Get code from name (avoid in new code — prefer storing codes)
+countries.getAlpha2Code('Colombia', 'en');  // → "CO"
+
+// Get all countries (for a dropdown)
+countries.getNames('en', { select: 'official' });
+// → { "AF": "Afghanistan", "AL": "Albania", ... }
+```
+
+Do not use `i18n-iso-countries` for subdivision validation — it covers countries only. For subdivision validation, maintain a validated list in your application or use a data package specific to the subdivisions your product supports.
+
+### Python
+
+```bash
+pip install pycountry==23.12.11
+```
+
+```python
+import pycountry
+
+# Validate country code
+pycountry.countries.get(alpha_2='US')   # → Country(alpha_2='US', ...)
+pycountry.countries.get(alpha_2='XX')   # → None
+
+# Validate subdivision code
+pycountry.subdivisions.get(code='US-NY')  # → Subdivision(code='US-NY', ...)
+pycountry.subdivisions.get(code='US-ZZ')  # → None
+
+# Get all subdivisions for a country
+pycountry.subdivisions.get(country_code='US')  # → list of US subdivisions
+```
+
+### Go
+
+```bash
+go get github.com/biter777/countries@v1.7.2
+```
+
+```go
+import "github.com/biter777/countries"
+
+// Validate country code
+c := countries.ByName("US")
+c.IsValid()        // → true
+
+c2 := countries.ByName("XX")
+c2.IsValid()       // → false
+```
+
+---
+
+## Validation
+
+Validate country and subdivision codes at the API boundary — before they are written to the database. Return a clear validation error when the code is not in the ISO list.
+
+### Zod schema (TypeScript)
+
+```typescript
+import { z } from 'zod';
+import countries from 'i18n-iso-countries';
+import enLocale from 'i18n-iso-countries/langs/en.json';
+
+countries.registerLocale(enLocale);
+
+const ISO_3166_1_ALPHA2_REGEX = /^[A-Z]{2}$/;
+// ponytail: regex validates format; countries.isValid() validates existence
+const ISO_3166_2_REGEX = /^[A-Z]{2}-[A-Z0-9]{1,3}$/;
+
+export const addressSchema = z.object({
+  streetLine1: z.string().min(1),
+  streetLine2: z.string().optional(),
+  city: z.string().min(1),
+  postalCode: z.string().optional(),
+  countryCode: z
+    .string()
+    .regex(ISO_3166_1_ALPHA2_REGEX, 'Must be a 2-letter uppercase country code')
+    .refine(val => countries.isValid(val), 'Must be a valid ISO 3166-1 alpha-2 country code'),
+  subdivisionCode: z
+    .string()
+    .regex(ISO_3166_2_REGEX, 'Must be a valid ISO 3166-2 code (e.g. US-NY)')
+    .optional()
+    .nullable(),
+});
+```
+
+### Normalisation before validation
+
+Normalise the input to uppercase before validating. Do not reject `"us"` or `"Us"` — normalise, then validate.
+
+```typescript
+// ✅ Normalise, then validate
+const countryCode = rawInput.countryCode?.trim().toUpperCase();
+const parsed = addressSchema.parse({ ...rawInput, countryCode });
+
+// ❌ Validate without normalising — rejects valid codes with wrong case
+addressSchema.parse(rawInput);
+```
+
+---
+
+## Forbidden Patterns
+
+| Pattern | Why it is forbidden | Use instead |
+|---|---|---|
+| Storing country as display name | Not comparable across languages and systems | ISO 3166-1 alpha-2 code |
+| Using `UK` for the United Kingdom | Not a valid ISO 3166-1 code | `GB` |
+| Using `EU` as a country code | Not in ISO 3166-1 | Store the member state code |
+| Storing subdivision without country prefix | `"NY"` is ambiguous — NY exists in multiple contexts | Full ISO 3166-2 code: `"US-NY"` |
+| Using FIPS codes | US-only, not internationally recognised | ISO 3166-2 |
+| Using alpha-3 codes (`USA`, `ESP`) | Inconsistent with the alpha-2 standard in use | ISO 3166-1 alpha-2 |
+| Accepting codes without validation | Retired or invalid codes enter the database | Validate against the ISO list on input |
+| Storing numeric ISO 3166-1 codes | Only used in financial system contexts | Alpha-2 codes |
+| Free text `state` or `region` field for business logic | Cannot be reliably compared or keyed | ISO 3166-2 code |
+
+### Auditing your codebase
+
+```bash
+# Find columns or fields named 'country' without 'Code' suffix (possible free-text fields)
+grep -rn '"country":\|country TEXT\|country VARCHAR\|country String' src/ --include="*.ts" --include="*.sql"
+
+# Find UK used as a country code
+grep -rn '"UK"\|country.*=.*UK\b' src/ --include="*.ts" --include="*.sql"
+
+# Find state/region stored as free text (no code suffix)
+grep -rn '"state":\|"region":\|state TEXT\|region TEXT' src/ --include="*.ts" --include="*.sql"
+```
+
+---
+
+## Quick Reference
+
+```typescript
+// ✅ Validate country code
+import countries from 'i18n-iso-countries';
+countries.isValid('US');  // true
+countries.isValid('XX');  // false
+countries.isValid('uk');  // false — normalise to uppercase first
+
+// ✅ Display name from code (browser)
+new Intl.DisplayNames(['en'], { type: 'region' }).of('US'); // "United States"
+
+// ✅ Full ISO 3166-2 code — always include country prefix
+const subdivisionCode = 'US-NY'; // ✅
+const subdivisionCode = 'NY';    // ❌
+
+// ✅ API payload
+{ "countryCode": "US", "subdivisionCode": "US-NY" }
+
+// ❌ Forbidden
+{ "country": "United States", "state": "New York" }
+{ "countryCode": "UK" }  // UK is not a valid ISO code — use GB
+{ "subdivisionCode": "NY" }  // missing country prefix
+```
+
+| Task | How |
+|---|---|
+| Store a country | ISO 3166-1 alpha-2 (`CHAR(2)`, uppercase, not null) |
+| Store a subdivision | ISO 3166-2 full code (`VARCHAR(6)`, includes country prefix) |
+| Display a country name | `Intl.DisplayNames` or `i18n-iso-countries.getName()` |
+| Validate a country code | `i18n-iso-countries.isValid()` after normalising to uppercase |
+| Validate a subdivision code | Match against ISO 3166-2 list for the given country |
+| Handle UK | Use `GB` — `UK` is not a valid ISO 3166-1 alpha-2 code |
+| Handle EU | Store the member state code — `EU` is not in ISO 3166-1 |
+| Handle retired codes (`CS`, `AN`) | Reject on input — validate against the current ISO list |
+| Normalise user input | `.trim().toUpperCase()` before validation |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
