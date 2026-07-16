@@ -1,0 +1,440 @@
+---
+sidebar_position: 14
+title: Currency and Money Standards
+description: Engineering guide for storing and handling monetary values as integers in the smallest currency unit to prevent floating-point precision errors.
+author: CTO
+tags: [standards, money, currency, precision, database, payments]
+---
+
+# Currency and Money Standards
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> Money is the one place where a rounding error is not a bug report — it is a financial loss, a compliance failure, or a fraud vector. This guide defines how every monetary value is stored, calculated, and displayed across all our systems.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: Smallest Unit as Integer](#the-standard-smallest-unit-as-integer)
+3. [Currency Codes](#currency-codes)
+4. [Arithmetic Rules](#arithmetic-rules)
+5. [Official Tooling](#official-tooling)
+6. [Database Setup](#database-setup)
+7. [API Rules](#api-rules)
+8. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+Floating-point numbers cannot represent most decimal values exactly. This is not a bug in any language — it is how binary floating-point arithmetic works. It becomes a serious problem the moment you use it for money.
+
+### Floating-point produces wrong results
+
+**The error is invisible until it compounds.**
+In JavaScript, `0.1 + 0.2` does not equal `0.3`. It equals `0.30000000000000004`. A single transaction where this happens looks fine. After thousands of transactions, the accumulated error becomes a real discrepancy between what your system recorded and what the bank processed.
+
+```typescript
+// The floating-point problem
+0.1 + 0.2 === 0.3          // false
+0.1 + 0.2                  // 0.30000000000000004
+
+1.005.toFixed(2)            // '1.00' — rounds the wrong way
+(0.1 + 0.2).toFixed(2)     // '0.30' — looks correct, but the value is wrong
+```
+
+**At scale, small errors become large discrepancies.**
+A rounding error of one cent per transaction on 500,000 daily transactions is a $5,000 daily discrepancy. Payment processors, banks, and auditors will notice this. Your accounting team will spend weeks investigating it.
+
+### Truncation errors cause real financial loss
+
+**Rounding during calculation assigns the error to someone.**
+If a 3-way split of $10.00 is calculated as `10.00 / 3 = 3.3333...` and each result is rounded to `$3.33`, the total is `$9.99`. One dollar cent is lost. In a payment system, that cent is either charged to the customer incorrectly or absorbed as a loss by the business.
+
+### Wrong storage types break audits
+
+**Storing money as `FLOAT` in Postgres fails accounting reconciliation.**
+A `FLOAT` or `DOUBLE` column stores an approximation. Two systems reading the same row can compute different display values. Auditors and payment processors work with exact integers — they count cents. If your system stores approximations and theirs stores integers, reconciliation requires manual correction on every statement.
+
+> **Architectural warning:** Never use `float`, `double`, or JavaScript's `number` type to store or calculate monetary values. These types are not wrong by accident — they are the wrong tool for the job, by design.
+
+---
+
+## The Standard: Smallest Unit as Integer
+
+Every monetary value is stored and passed as an **integer in the smallest unit of the currency**.
+
+For most currencies, the smallest unit is one cent (1/100 of the main unit).
+
+| Currency | Code | Smallest unit | Example: $10.00 |
+|---|---|---|---|
+| US Dollar | `USD` | 1 cent | `1000` |
+| Euro | `EUR` | 1 cent | `1000` |
+| British Pound | `GBP` | 1 penny | `1000` |
+| Brazilian Real | `BRL` | 1 centavo | `1000` |
+| Japanese Yen | `JPY` | 1 yen (no subunit) | `10` |
+| Kuwaiti Dinar | `KWD` | 1 fils (1/1000) | `10000` |
+
+**Zero-decimal currencies** (like JPY) have no subunit — the integer value is the full unit amount.
+**Three-decimal currencies** (like KWD) use 1/1000 as the smallest unit.
+
+Always check the ISO 4217 standard for the decimal places of any currency before implementing support for it.
+
+### Before and after
+
+| Before (wrong) | After (correct) |
+|---|---|
+| `amount: 10.99` (float) | `amount: 1099` (integer, cents) |
+| `price: 3.33` (float) | `price: 333` (integer, cents) |
+| `total: 0.1 + 0.2` | `total: 10 + 20` (integer cents) |
+| `FLOAT` column in database | `BIGINT` column in database |
+| `fee: "2.5%"` calculated as float | `fee: 25` (integer basis points) |
+
+---
+
+## Currency Codes
+
+Every monetary value must travel with its currency code. An amount without a currency is meaningless and dangerous — `1000` could be $10.00 USD or ¥1,000 JPY, which are very different values.
+
+### Rules
+
+- Always use **ISO 4217** three-letter currency codes (`USD`, `EUR`, `GBP`).
+- Store the currency code alongside the amount in the same record.
+- Never assume a default currency. Always make it explicit.
+- Never mix amounts from different currencies in the same arithmetic operation.
+
+```typescript
+// ✅ Amount always travels with its currency
+interface Money {
+  amount: number;   // integer, smallest unit
+  currency: string; // ISO 4217 code
+}
+
+const price: Money = { amount: 1099, currency: 'USD' }; // $10.99
+
+// ❌ Wrong — amount with no currency
+const price = 1099;
+```
+
+### Mixing currencies is forbidden
+
+```typescript
+// ❌ Wrong — adding amounts in different currencies
+const total = usdAmount + eurAmount;
+
+// ✅ Correct — convert first, then add (or reject the operation)
+// Conversion must use a locked exchange rate from an external source,
+// recorded at the time of the transaction.
+```
+
+---
+
+## Arithmetic Rules
+
+Integer arithmetic eliminates floating-point errors. Follow these rules for every calculation involving money.
+
+### Addition and subtraction
+
+Safe with integers. No special handling needed.
+
+```typescript
+// ✅ Safe — integer addition
+const subtotal = 1099; // $10.99
+const tax      =  110; //  $1.10
+const total    = subtotal + tax; // 1209 = $12.09
+```
+
+### Multiplication and percentage
+
+Multiply first, then round. The rounding direction must be defined explicitly — do not rely on the language default.
+
+```typescript
+// ✅ Correct — multiply then round
+const amount     = 1099;  // $10.99
+const taxRatePercent = 10; // 10%
+
+const tax = Math.round(amount * taxRatePercent / 100);
+// Math.round(109.9) = 110 ✅
+
+// ❌ Wrong — calculating in decimals first
+const tax = amount * 0.1; // 109.9 — not an integer
+```
+
+### Rounding rule
+
+Use **round half up** (`Math.round`) as the default. If a specific business rule requires a different rounding method (e.g. always round in the customer's favor), document it explicitly in the code and in the product specification.
+
+```typescript
+// Standard rounding
+Math.round(109.5) // 110 — rounds up
+Math.round(109.4) // 109 — rounds down
+
+// ✅ Use Dinero.js for complex rounding — see Official Tooling
+```
+
+### Splitting amounts
+
+When splitting an amount across multiple parties (e.g. a 3-way split), the remainder must be assigned explicitly — not lost.
+
+```typescript
+// ✅ Correct — remainder assigned to the first party
+function splitAmount(total: number, parts: number): number[] {
+  const base = Math.floor(total / parts);
+  const remainder = total % parts;
+  return Array.from({ length: parts }, (_, i) => base + (i < remainder ? 1 : 0));
+}
+
+splitAmount(1000, 3); // [334, 333, 333] — totals 1000 ✅
+
+// ❌ Wrong — remainder is lost
+const share = Math.round(1000 / 3); // 333
+const shares = [333, 333, 333];     // totals 999, one cent lost
+```
+
+### Basis points for fees and rates
+
+Percentage fees (e.g. payment processing fees) are stored as **basis points** (1 basis point = 0.01%). This avoids decimal percentages.
+
+| Fee | As percentage | As basis points |
+|---|---|---|
+| 2.5% | `0.025` (float) | `250` (integer) |
+| 0.5% | `0.005` (float) | `50` (integer) |
+| 1%   | `0.01` (float)  | `100` (integer) |
+
+```typescript
+// ✅ Fee stored as basis points
+const feeRateBps = 250; // 2.5%
+const amount     = 10000; // $100.00
+
+const fee = Math.round(amount * feeRateBps / 10000);
+// Math.round(10000 * 250 / 10000) = Math.round(250) = 250 = $2.50 ✅
+```
+
+---
+
+## Official Tooling
+
+**Approved library:** `dinero.js` (v2)
+
+Use Dinero.js for any operation beyond simple addition and subtraction: percentage calculations, splits, formatting, and multi-currency arithmetic.
+
+```bash
+npm install dinero.js @dinero.js/currencies
+```
+
+Why Dinero.js:
+- Enforces integer storage internally — you cannot accidentally pass a float.
+- Carries the currency with the amount — mixing currencies throws an error.
+- Handles rounding modes explicitly (`ROUND_HALF_UP`, `ROUND_HALF_EVEN`, etc.).
+- Handles zero-decimal and three-decimal currencies automatically.
+- Produces formatted display strings without touching the stored integer.
+
+**Do not use:**
+- Plain `number` arithmetic for money — no rounding control, no currency enforcement.
+- `decimal.js` or `big.js` alone — they use decimal types, not integers; they solve the precision problem but do not enforce the integer-smallest-unit standard.
+- `toFixed()` for rounding — it returns a string, not a number, and rounds incorrectly for some values.
+
+```typescript
+import { dinero, add, multiply, toDecimal, toSnapshot } from 'dinero.js';
+import { USD } from '@dinero.js/currencies';
+
+// ✅ Create a Dinero object — always from integers
+const price = dinero({ amount: 1099, currency: USD }); // $10.99
+const tax   = dinero({ amount:  110, currency: USD }); //  $1.10
+
+// ✅ Add
+const total = add(price, tax); // $12.09 — stays as integer internally
+
+// ✅ Format for display
+toDecimal(total); // '12.09' — string, for display only
+
+// ✅ Read the integer for storage or API response
+const { amount, currency } = toSnapshot(total);
+// { amount: 1209, currency: { code: 'USD', ... } }
+
+// ✅ Percentage with explicit rounding
+import { multiply, allocate } from 'dinero.js';
+const fee = multiply(price, { amount: 250, scale: 4 }); // 2.5% fee
+```
+
+---
+
+## Database Setup
+
+### Column type: `BIGINT`, not `DECIMAL` or `FLOAT`
+
+Store amounts as `BIGINT`. It is an integer type — no approximation, no rounding at the database level.
+
+Do not use `DECIMAL`/`NUMERIC` for money storage. While `NUMERIC` is exact, it introduces complexity at the application boundary (it is returned as a string by most Node.js drivers) and tempts developers to store non-integer values.
+
+Do not use `FLOAT` or `DOUBLE PRECISION` for any monetary column. Ever.
+
+| Column type | Exact? | Use for money? |
+|---|---|---|
+| `BIGINT` | Yes | **Required** |
+| `NUMERIC` / `DECIMAL` | Yes | Not recommended — complexity at driver boundary |
+| `FLOAT` | No — approximation | **Forbidden** |
+| `DOUBLE PRECISION` | No — approximation | **Forbidden** |
+
+### Schema example
+
+```sql
+CREATE TABLE orders (
+  id           UUID        PRIMARY KEY DEFAULT uuid_generate_v7(),
+  user_id      UUID        NOT NULL REFERENCES users(id),
+  amount       BIGINT      NOT NULL,          -- in cents, e.g. 1099 = $10.99
+  currency     CHAR(3)     NOT NULL,          -- ISO 4217 code, e.g. 'USD'
+  fee_amount   BIGINT      NOT NULL DEFAULT 0,
+  tax_amount   BIGINT      NOT NULL DEFAULT 0,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Prevent negative amounts
+ALTER TABLE orders ADD CONSTRAINT orders_amount_positive CHECK (amount >= 0);
+ALTER TABLE orders ADD CONSTRAINT orders_currency_format CHECK (currency ~ '^[A-Z]{3}$');
+```
+
+### Prisma schema
+
+```prisma
+model Order {
+  id         String   @id @db.Uuid
+  userId     String   @db.Uuid
+  amount     BigInt                // integer cents — use BigInt in Prisma
+  currency   String   @db.Char(3) // ISO 4217
+  feeAmount  BigInt   @default(0)
+  taxAmount  BigInt   @default(0)
+  createdAt  DateTime @default(now())
+
+  user       User     @relation(fields: [userId], references: [id])
+}
+```
+
+Note: Prisma returns `BigInt` fields as JavaScript `BigInt`, not `number`. Convert to `number` only after confirming the value fits safely (amounts below `Number.MAX_SAFE_INTEGER`, which covers any realistic monetary value in cents).
+
+```typescript
+// ✅ Convert BigInt from Prisma for use with Dinero.js
+const order = await prisma.order.findUniqueOrThrow({ where: { id } });
+const amount = Number(order.amount); // safe for realistic monetary values
+```
+
+---
+
+## API Rules
+
+### Input: accept integers only
+
+API endpoints that receive monetary values must accept integers in the smallest unit. Never accept decimal strings or floating-point numbers as input.
+
+```typescript
+// ✅ Request body — integer cents
+{
+  "amount": 1099,
+  "currency": "USD"
+}
+
+// ❌ Wrong — decimal input
+{
+  "amount": 10.99,
+  "currency": "USD"
+}
+```
+
+Validate that the input is an integer on arrival:
+
+```typescript
+import { z } from 'zod';
+
+const MoneySchema = z.object({
+  amount: z.number().int().positive(),    // must be a positive integer
+  currency: z.string().length(3).regex(/^[A-Z]{3}$/),
+});
+```
+
+### Output: return integers, include currency
+
+API responses always return the integer amount and the currency code together. Formatting (adding the `$` symbol, inserting the decimal point) is the responsibility of the client.
+
+```typescript
+// ✅ API response
+{
+  "id": "01966a4e-1d40-7c3b-a921-4f2b3c1d5e6f",
+  "amount": 1099,
+  "currency": "USD"
+}
+
+// ❌ Wrong — formatted string in the response
+{
+  "amount": "$10.99"
+}
+
+// ❌ Wrong — float in the response
+{
+  "amount": 10.99
+}
+```
+
+### Display formatting is a client responsibility
+
+The API sends integers. The client formats them for display using the user's locale.
+
+```typescript
+// ✅ Client-side formatting
+function formatMoney(amount: number, currency: string, locale: string = 'en-US'): string {
+  return new Intl.NumberFormat(locale, {
+    style: 'currency',
+    currency,
+  }).format(amount / 100); // divide by 100 only at display time
+}
+
+formatMoney(1099, 'USD'); // '$10.99'
+formatMoney(1099, 'EUR', 'de-DE'); // '10,99 €'
+```
+
+---
+
+## Quick Reference
+
+```typescript
+// ✅ Store and pass money as integer cents
+const amount = 1099; // $10.99
+
+// ✅ Add
+const total = 1099 + 110; // 1209 = $12.09
+
+// ✅ Multiply with rounding
+const tax = Math.round(1099 * 10 / 100); // 110 = $1.10
+
+// ✅ Split without losing remainder
+function split(total: number, parts: number): number[] {
+  const base = Math.floor(total / parts);
+  const rem  = total % parts;
+  return Array.from({ length: parts }, (_, i) => base + (i < rem ? 1 : 0));
+}
+
+// ✅ Display — divide by decimal places only at the UI layer
+new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(1099 / 100);
+
+// ❌ Never
+const amount = 10.99;             // float
+const total  = 10.99 + 1.10;     // float arithmetic
+const fee    = amount * 0.025;    // float percentage
+amount.toFixed(2);                // string rounding
+FLOAT column in the database;
+```
+
+| Task | How |
+|---|---|
+| Store a price | `BIGINT` column, value in cents (e.g. `1099` for $10.99) |
+| Store a currency | `CHAR(3)` column, ISO 4217 code (e.g. `'USD'`) |
+| Add two amounts | Integer addition — no special handling |
+| Apply a percentage fee | `Math.round(amount * rateBps / 10000)` |
+| Split an amount | `Math.floor` + distribute remainder one cent at a time |
+| Format for display | `Intl.NumberFormat` on the client — divide by decimal places there |
+| Accept money in the API | `z.number().int().positive()` — reject floats at the boundary |
+| Use complex money operations | `dinero.js` v2 |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
