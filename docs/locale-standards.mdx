@@ -1,0 +1,301 @@
+---
+sidebar_position: 27
+title: Locale Standards (BCP 47)
+description: Engineering guide for storing and validating system locales using the BCP 47 hyphenated language-region format across all formatting and i18n systems.
+author: CTO
+tags: [standards, locale, bcp47, i18n, localization, formatting, typescript, go]
+---
+
+# Locale Standards (BCP 47)
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> This is not a suggestion. Every system that formats dates, numbers, or currency for users, or drives regional UI behavior, must follow this guide.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: BCP 47 Locale Tags](#the-standard-bcp-47-locale-tags)
+3. [locale vs language\_code: Know the Difference](#locale-vs-language_code-know-the-difference)
+4. [Official Tooling](#official-tooling)
+5. [Database Best Practices](#database-best-practices)
+6. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+Formatting is invisible when it is correct and instantly wrong when it is not.
+
+A date written as `04/05/2025` means April 5 to a user in the United States and May 4 to a user in Colombia. A number written as `1.234` means one thousand two hundred thirty-four in the US and one point two three four in Germany. When we do not store and apply locale correctly, users see wrong dates, wrong number separators, and wrong currency symbols — and they lose trust in the product.
+
+### What Goes Wrong Without a Standard
+
+**Dates are misread.**
+`MM/DD/YYYY` and `DD/MM/YYYY` are both in active use across our markets. A user in `es-CO` who sees a date formatted for `en-US` may read the wrong day as the month. In an e-commerce context this means orders placed on the wrong date, failed deliveries, and support tickets.
+
+**Currency formatting is wrong.**
+`$1,234.56` is correct for `en-US`. For `es-CO` the correct format is `$1.234,56` — period as thousands separator, comma as decimal separator. Using the wrong locale produces numbers that are off by a factor of 1,000 or simply unreadable to the user.
+
+**Pluralization rules break.**
+Many languages have plural forms that English does not. Russian, Polish, and Arabic each have three or more plural forms. i18n libraries derive pluralization rules from the locale. Passing a wrong or missing locale causes the wrong plural form to be selected — grammatically incorrect strings are shown to users.
+
+**The underscore format breaks platform APIs.**
+`en_US` is the POSIX locale format used by Linux systems and some older frameworks. BCP 47 uses `en-US` with a hyphen. Passing `en_US` to the JavaScript `Intl` API, to `Accept-Language` headers, or to translation libraries produces a parse error or a silent fallback to a wrong locale.
+
+> **Architectural warning:** Locale bugs are market-specific. Engineers testing in their own locale never see them. They appear in production when the first user in a new market logs in. Enforce the standard at the data layer so the bug cannot be written in the first place.
+
+---
+
+## The Standard: BCP 47 Locale Tags
+
+We store all `locale` values using the **BCP 47** format. BCP 47 is the IETF standard for language tags. It is the format used by HTTP `Accept-Language` headers, the JavaScript `Intl` API, iOS and Android locale APIs, and all major i18n libraries.
+
+### Format Rules
+
+```
+[language subtag]-[REGION subtag]
+```
+
+| Component | Rule | Source standard | Example |
+|---|---|---|---|
+| Language subtag | 2 lowercase letters | ISO 639-1 | `en`, `es`, `pt` |
+| `-` | Mandatory hyphen separator | BCP 47 | `-` |
+| REGION subtag | 2 uppercase letters | ISO 3166-1 alpha-2 | `US`, `CO`, `BR` |
+
+> **See also:** The `language_code` field (ISO 639-1 only) is documented separately in the [Language Code Standards](./language-code-standards) guide. The country/region component of a locale follows the same alpha-2 codes documented in the [Country and Subdivision Standards](./country-and-subdivision-standards) guide.
+
+### Reference: Common Locales
+
+| Locale | Language | Region |
+|---|---|---|
+| `en-US` | English | United States |
+| `en-GB` | English | United Kingdom |
+| `en-CA` | English | Canada |
+| `es-CO` | Spanish | Colombia |
+| `es-MX` | Spanish | Mexico |
+| `es-ES` | Spanish | Spain |
+| `es-AR` | Spanish | Argentina |
+| `pt-BR` | Portuguese | Brazil |
+| `pt-PT` | Portuguese | Portugal |
+| `fr-FR` | French | France |
+| `fr-CA` | French | Canada |
+| `de-DE` | German | Germany |
+| `it-IT` | Italian | Italy |
+| `ja-JP` | Japanese | Japan |
+| `zh-CN` | Chinese (Simplified) | China |
+| `zh-TW` | Chinese (Traditional) | Taiwan |
+
+### Normalization Rules
+
+| Raw Input | Stored Value |
+|---|---|
+| `en-us` | `en-US` |
+| `EN-US` | `en-US` |
+| `Es-Co` | `es-CO` |
+| `en_US` | `en-US` — replace underscore with hyphen |
+| `en_us` | `en-US` — replace underscore, uppercase region |
+| `en` | ❌ Invalid for this field — language only, no region; use `language_code` field |
+| `english-US` | ❌ Invalid — language subtag must be 2 letters (ISO 639-1) |
+| `en-USA` | ❌ Invalid — region subtag must be 2 letters (ISO 3166-1 alpha-2) |
+| `zh-Hans-CN` | ⚠️ Valid BCP 47 with script subtag, but outside this field's scope — store as `zh-CN` |
+
+> **Rule:** Accept the POSIX underscore form (`en_US`) and convert it to BCP 47 (`en-US`). Lowercase the language subtag. Uppercase the region subtag. Reject anything that does not reduce to a valid two-part `language-REGION` tag.
+
+---
+
+## locale vs language\_code: Know the Difference
+
+| Field | Format | Purpose |
+|---|---|---|
+| `language_code` | `en`, `es`, `pt` | What language the content is in, or the user prefers |
+| `locale` | `en-US`, `es-CO`, `pt-BR` | How to format numbers, dates, and currency for a specific region |
+
+Use `language_code` to select translated content.
+Use `locale` to format output for the user's region.
+
+A user who speaks Spanish but lives in the US may have `language_code = es` and `locale = es-US`. Their UI is in Spanish. Their dates are formatted `MM/DD/YYYY`. Both fields are needed.
+
+Do not store `en-US` in the `language_code` field. Do not store `en` in the `locale` field. They are different columns with different validation rules.
+
+---
+
+## Official Tooling
+
+Use the approved libraries for parsing and validation. The `Intl.Locale` API is built into Node.js 12+ and modern browsers — use it for TypeScript before reaching for a package.
+
+---
+
+### TypeScript / JavaScript
+
+**Built-in API:** `Intl.Locale` (Node.js 12+, all modern browsers)
+
+No installation required.
+
+```ts
+function normalizeLocale(raw: string): string {
+  // Convert POSIX underscore format to BCP 47 hyphen
+  const bcp47 = raw.replace('_', '-');
+  let tag: Intl.Locale;
+  try {
+    tag = new Intl.Locale(bcp47);
+  } catch {
+    throw new Error(`Invalid locale: "${raw}"`);
+  }
+  const language = tag.language?.toLowerCase();
+  const region = tag.region?.toUpperCase();
+  if (!language || language.length !== 2) {
+    throw new Error(`Invalid locale language subtag in: "${raw}"`);
+  }
+  if (!region || region.length !== 2) {
+    throw new Error(`Invalid locale region subtag in: "${raw}" — region is required`);
+  }
+  return `${language}-${region}`;
+}
+```
+
+**Why built-in first:**
+
+- `Intl.Locale` is maintained by the V8/SpiderMonkey teams — the same engine that runs your Node.js server.
+- It validates against the actual BCP 47 spec, not a hand-rolled regex.
+- No npm dependency to manage or audit.
+
+**When to add a package:** Use [`@formatjs/intl-locale`](https://www.npmjs.com/package/@formatjs/intl-locale) only if you need to support Node.js versions below 12 or environments where `Intl.Locale` is unavailable.
+
+Do not use regex like `/^[a-z]{2}-[A-Z]{2}$/` alone. It accepts structurally correct but semantically invalid tags like `xx-ZZ`. The `Intl.Locale` constructor validates against the real tag registry.
+
+Do not use `en_US` underscore format in any API call, HTTP header, or stored value. Convert it before use.
+
+---
+
+### Go
+
+**Package:** [`golang.org/x/text/language`](https://pkg.go.dev/golang.org/x/text/language)
+
+```bash
+go get golang.org/x/text/language
+```
+
+**Why this package:**
+
+- Part of the official Go extended standard library.
+- Parses and validates BCP 47 tags correctly.
+- Supports tag canonicalization — converts legacy and non-standard forms to canonical BCP 47.
+- Used internally by Go's i18n and collation packages.
+
+```go
+import (
+    "fmt"
+    "strings"
+    "golang.org/x/text/language"
+)
+
+func normalizeLocale(raw string) (string, error) {
+    // Convert POSIX underscore to BCP 47 hyphen
+    bcp47 := strings.Replace(raw, "_", "-", 1)
+
+    tag, err := language.Parse(bcp47)
+    if err != nil {
+        return "", fmt.Errorf("invalid locale %q: %w", raw, err)
+    }
+
+    base, confB := tag.Base()
+    region, confR := tag.Region()
+
+    if confB == language.No || len(base.String()) != 2 {
+        return "", fmt.Errorf("invalid locale language subtag in %q", raw)
+    }
+    if confR == language.No || len(region.String()) != 2 {
+        return "", fmt.Errorf("invalid locale region subtag in %q — region is required", raw)
+    }
+
+    return fmt.Sprintf("%s-%s", base.String(), region.String()), nil
+}
+```
+
+Do not use `strings.Split(locale, "-")` and check the parts manually. It does not validate that the subtags are assigned values in their respective standards.
+
+---
+
+## Database Best Practices
+
+### Column Type
+
+Store `locale` values as `VARCHAR(10)`. The two-part `language-REGION` tag is always 5 characters, but `VARCHAR(10)` provides safe headroom for rare valid extensions.
+
+| Decision | Recommendation |
+|---|---|
+| **Type** | `VARCHAR(10)` |
+| **Format** | `language-REGION` — lowercase language, uppercase region, hyphen separator |
+| **Nullable** | Only if locale is genuinely optional; prefer a sensible default |
+| **Default** | Set a market-appropriate default (e.g., `'es-CO'` for Colombian users) |
+| **Encoding** | Plain ASCII |
+
+```sql
+-- PostgreSQL: enforce format with a regex CHECK constraint
+ALTER TABLE users
+  ADD COLUMN locale VARCHAR(10)
+  CHECK (locale ~ '^[a-z]{2}-[A-Z]{2}$');
+```
+
+> The `CHECK` constraint enforces format. Application-level validation (via `Intl.Locale` or `golang.org/x/text/language`) enforces that the subtags are valid assigned values. Both layers are necessary.
+
+### Default Value Strategy
+
+| Scenario | Recommended default |
+|---|---|
+| Single-market product | Hardcode the market locale: `'en-US'`, `'es-CO'`, etc. |
+| Multi-market product | Derive from user's country at registration; store explicitly |
+| Unknown user | `NULL` — do not assume; fall back to `Accept-Language` header at runtime |
+
+### Indexes
+
+Index `locale` when it appears in `WHERE` clauses or drives content segmentation.
+
+```sql
+-- Filter content or users by locale
+CREATE INDEX idx_users_locale ON users (locale);
+
+-- Composite: locale + active status
+CREATE INDEX idx_users_locale_active ON users (locale, is_active);
+```
+
+---
+
+## Quick Reference
+
+```
+✅  Store as: en-US  |  es-CO  |  pt-BR  |  fr-CA  |  zh-TW
+❌  Never store: en_US  |  EN-US  |  en  |  english-US  |  en-USA
+```
+
+| Task | How |
+|---|---|
+| Accept raw input | Replace `_` with `-`, lowercase language, uppercase region, validate |
+| Validate in TypeScript | `new Intl.Locale(bcp47)` — throws on invalid input |
+| Validate in Go | `language.Parse(bcp47)` from `golang.org/x/text/language` |
+| Store in DB | `VARCHAR(10)`, `CHECK (locale ~ '^[a-z]{2}-[A-Z]{2}$')` |
+| Format a date | `new Intl.DateTimeFormat(locale).format(date)` |
+| Format a number | `new Intl.NumberFormat(locale).format(number)` |
+| Format currency | `new Intl.NumberFormat(locale, { style: 'currency', currency }).format(amount)` |
+| Derive from language + country | `${language_code}-${country.toUpperCase()}` after validating both |
+| Store language only | Use the `language_code` field (`CHAR(2)`), not this field |
+
+| Format | Valid? | Notes |
+|---|---|---|
+| `en-US` | ✅ | Correct BCP 47 |
+| `es-CO` | ✅ | Correct BCP 47 |
+| `en_US` | ⚠️ | POSIX format — normalize to `en-US` before storing |
+| `en` | ❌ | Language only — use `language_code` field |
+| `en-USA` | ❌ | Region must be 2 letters |
+| `english-US` | ❌ | Language must be 2-letter ISO 639-1 code |
+
+| Language | Approved package |
+|---|---|
+| Node.js / TypeScript | `Intl.Locale` (built-in, no install) |
+| Go | [`golang.org/x/text/language`](https://pkg.go.dev/golang.org/x/text/language) |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
