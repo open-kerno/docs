@@ -1,0 +1,349 @@
+---
+sidebar_position: 17
+title: Secure Token Storage
+description: Engineering guide for storing authentication tokens safely — why LocalStorage is forbidden and how to configure secure HttpOnly cookies correctly.
+author: CTO
+tags: [standards, security, tokens, cookies, jwt, xss, authentication]
+---
+
+# Secure Token Storage
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> Where you store a token is as important as how you generate it. A perfectly signed JWT stored in the wrong place is a credential waiting to be stolen. This guide defines the only accepted storage mechanism for authentication tokens across all our services.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: HttpOnly Cookies](#the-standard-httponly-cookies)
+3. [Cookie Attributes](#cookie-attributes)
+4. [Setting Cookies on the Server](#setting-cookies-on-the-server)
+5. [Token Lifetime and Refresh Strategy](#token-lifetime-and-refresh-strategy)
+6. [CSRF Protection](#csrf-protection)
+7. [Forbidden Storage Locations](#forbidden-storage-locations)
+8. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+### LocalStorage is readable by any JavaScript on the page
+
+**XSS turns LocalStorage into an open vault.**
+When a token is stored in `localStorage` or `sessionStorage`, any JavaScript running on the page can read it with `localStorage.getItem('token')`. Cross-Site Scripting (XSS) is one of the most common web vulnerabilities. An attacker who injects a single script tag — through a dependency, a user-generated content field, a misconfigured Content Security Policy, or a compromised third-party script — can silently read all tokens from storage, send them to an external server, and use them to impersonate the user indefinitely.
+
+The user does not see this happen. There is no error. The token is gone.
+
+### XSS is not a theoretical risk
+
+**Modern applications have large JavaScript surfaces.**
+A typical frontend application loads code from npm packages, CDNs, analytics providers, customer support widgets, and A/B testing tools. Any of these is a potential XSS vector. A single vulnerable package, a supply-chain compromise, or one unescaped output field is enough. Assuming your application is XSS-free and therefore safe to use `localStorage` is not a security posture — it is a bet.
+
+### Stolen tokens cannot be invalidated quickly
+
+**A token in the wrong hands stays valid until it expires.**
+If an access token stored in `localStorage` is stolen, and it has a 24-hour expiry, the attacker has 24 hours of unrestricted access. Short token lifetimes help, but they do not eliminate the window. The correct defence is to prevent the token from being readable by JavaScript in the first place.
+
+> **Architectural warning:** `localStorage` and `sessionStorage` have no XSS protection by design. They are browser APIs intended for non-sensitive data. Using them for authentication tokens is a known, documented vulnerability (OWASP A07:2021 — Identification and Authentication Failures). There is no configuration that makes `localStorage` safe for token storage.
+
+---
+
+## The Standard: HttpOnly Cookies
+
+Authentication tokens — access tokens, refresh tokens, and session IDs — must be stored in **`HttpOnly` cookies set by the server**.
+
+An `HttpOnly` cookie cannot be read or written by JavaScript. `document.cookie` does not include it. `localStorage.getItem()` cannot access it. An XSS attack that runs arbitrary JavaScript on the page cannot touch it.
+
+The browser sends the cookie automatically with every matching request. The server reads it from the request headers. The client-side JavaScript never sees the token value.
+
+### Storage location by token type
+
+| Token type | Storage | Rationale |
+|---|---|---|
+| Access token | `HttpOnly` cookie | Cannot be read by JavaScript |
+| Refresh token | `HttpOnly` cookie | Cannot be read by JavaScript |
+| Session ID | `HttpOnly` cookie | Cannot be read by JavaScript |
+| CSRF token | `localStorage` or non-`HttpOnly` cookie | Must be readable by JavaScript — it is not a credential |
+
+The CSRF token is the only token that JavaScript needs to read. It is not a credential on its own. See [CSRF Protection](#csrf-protection).
+
+---
+
+## Cookie Attributes
+
+Every authentication cookie must include all of the following attributes. Missing any one of them weakens the protection.
+
+| Attribute | Required value | Why |
+|---|---|---|
+| `HttpOnly` | Present | Blocks JavaScript access — prevents XSS from reading the token |
+| `Secure` | Present | Cookie is only sent over HTTPS — prevents transmission over plain HTTP |
+| `SameSite` | `Strict` or `Lax` | Controls when the browser sends the cookie on cross-site requests |
+| `Path` | `/` | Cookie is sent to all paths on the domain |
+| `Domain` | Explicit or omitted | Omit to restrict to the exact origin; set explicitly only for subdomain sharing |
+| `Max-Age` / `Expires` | Matches token lifetime | Cookie is removed when the token expires |
+
+### SameSite: Strict vs. Lax
+
+| Value | Cookie sent on same-site requests | Cookie sent on cross-site navigation (link click) | Cookie sent on cross-site POST |
+|---|---|---|---|
+| `Strict` | Yes | No | No |
+| `Lax` | Yes | Yes | No |
+| `None` | Yes | Yes | Yes — requires `Secure` |
+
+**Use `Strict` when:** the application does not need to maintain session on navigation from an external link (e.g. internal tools, admin panels, B2B applications).
+
+**Use `Lax` when:** users are expected to arrive via external links and must still be logged in (e.g. a link in an email, a social share). `Lax` is the browser default and is acceptable for most consumer-facing applications.
+
+**Never use `None`** unless you are building a cross-site embedded integration (e.g. an iframe or a widget loaded in a third-party page). If you need `SameSite=None`, the request must go through a security review.
+
+---
+
+## Setting Cookies on the Server
+
+Cookies must be set by the server in the `Set-Cookie` response header. Never set authentication cookies from client-side JavaScript.
+
+### Access token cookie
+
+```typescript
+// ✅ Correct — HttpOnly access token cookie set by the server
+res.cookie('access_token', accessToken, {
+  httpOnly: true,
+  secure: true,            // HTTPS only
+  sameSite: 'strict',
+  path: '/',
+  maxAge: 15 * 60 * 1000, // 15 minutes in milliseconds
+});
+```
+
+### Refresh token cookie
+
+```typescript
+// ✅ Correct — HttpOnly refresh token cookie, longer lifetime
+res.cookie('refresh_token', refreshToken, {
+  httpOnly: true,
+  secure: true,
+  sameSite: 'strict',
+  path: '/auth/refresh',   // restrict to the refresh endpoint only
+  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+});
+```
+
+Restricting the refresh token cookie to `path: '/auth/refresh'` means the browser only sends it when calling the refresh endpoint. It is never included in requests to `/api/*` or any other path, which limits its exposure.
+
+### Reading the token on the server
+
+```typescript
+import cookieParser from 'cookie-parser';
+app.use(cookieParser());
+
+// In the JWT verification middleware:
+export function jwtMiddleware(req: Request, res: Response, next: NextFunction) {
+  const token = req.cookies['access_token']; // ✅ read from cookie, not Authorization header
+  if (!token) return next(new UnauthorizedError());
+
+  try {
+    req.user = jwt.verify(token, publicKey, {
+      algorithms: ['RS256'],
+      issuer: process.env.JWT_ISSUER,
+      audience: process.env.JWT_AUDIENCE,
+    });
+    next();
+  } catch {
+    next(new UnauthorizedError());
+  }
+}
+```
+
+### Clearing cookies on logout
+
+```typescript
+// ✅ Logout — clear both cookies with the same attributes used to set them
+export function logout(req: Request, res: Response) {
+  res.clearCookie('access_token', { httpOnly: true, secure: true, sameSite: 'strict', path: '/' });
+  res.clearCookie('refresh_token', { httpOnly: true, secure: true, sameSite: 'strict', path: '/auth/refresh' });
+  res.status(204).send();
+}
+```
+
+> **Rule:** Always clear cookies with the same `path`, `domain`, `secure`, and `sameSite` attributes used when setting them. A mismatch means the browser treats them as different cookies and the old one remains.
+
+---
+
+## Token Lifetime and Refresh Strategy
+
+Short-lived access tokens reduce the damage from any token compromise. The refresh token extends the session without requiring the user to log in again.
+
+| Token | Lifetime | Cookie path |
+|---|---|---|
+| Access token | 15 minutes | `/` |
+| Refresh token | 7 days, rotating | `/auth/refresh` |
+
+### Silent refresh
+
+The client cannot read the access token from the cookie (it is `HttpOnly`), so it cannot check whether the token is expired. Use one of these patterns:
+
+**Option 1 — Refresh on 401:** make the API call, catch a `401 Unauthorized` response, call `/auth/refresh`, retry the original request once.
+
+```typescript
+// ✅ Refresh on 401 — simple and reliable
+async function apiFetch(url: string, options: RequestInit = {}) {
+  let res = await fetch(url, { ...options, credentials: 'include' });
+  if (res.status === 401) {
+    await fetch('/auth/refresh', { method: 'POST', credentials: 'include' });
+    res = await fetch(url, { ...options, credentials: 'include' });
+  }
+  return res;
+}
+```
+
+**Option 2 — Proactive refresh:** the server returns a non-sensitive `tokenExpiresAt` timestamp in the login response body. The client stores this timestamp (not the token) and calls `/auth/refresh` a few seconds before it expires.
+
+```typescript
+// Server — return expiry time in the login response body (not the token itself)
+res.json({ expiresAt: Date.now() + 15 * 60 * 1000 });
+
+// Client — schedule refresh before expiry
+const REFRESH_BUFFER_MS = 30_000; // 30 seconds before expiry
+setTimeout(() => {
+  fetch('/auth/refresh', { method: 'POST', credentials: 'include' });
+}, expiresAt - Date.now() - REFRESH_BUFFER_MS);
+```
+
+Both patterns require `credentials: 'include'` on fetch calls so the browser sends the cookies. Without it, cookies are not included in cross-origin requests.
+
+### Rotating refresh tokens
+
+Each use of the refresh token issues a new refresh token and invalidates the previous one. If the server receives a refresh token that has already been used (replay attack), it must revoke the entire token family and force the user to log in again.
+
+---
+
+## CSRF Protection
+
+`HttpOnly` cookies solve XSS. They do not solve CSRF. A `SameSite=Strict` cookie largely mitigates CSRF, but applications using `SameSite=Lax` must add explicit CSRF protection.
+
+### How CSRF works with cookies
+
+A CSRF attack works by tricking the user's browser into making a request to your API from a malicious site. Because cookies are sent automatically by the browser, the request arrives with valid credentials — even though the user never initiated it.
+
+`SameSite=Strict` prevents this by blocking the cookie on all cross-site requests. `SameSite=Lax` blocks cross-site POST, PUT, and DELETE requests, but not GET. For applications using `Lax`, any state-changing operation must use a non-GET method, and you should add a CSRF token.
+
+### Double Submit Cookie pattern
+
+```typescript
+// Server — on login, set a CSRF token in a non-HttpOnly cookie (JavaScript must read it)
+res.cookie('csrf_token', crypto.randomUUID(), {
+  httpOnly: false, // intentionally readable by JavaScript
+  secure: true,
+  sameSite: 'strict',
+  path: '/',
+});
+
+// Client — read the CSRF token and send it in a request header
+const csrfToken = document.cookie
+  .split('; ')
+  .find(row => row.startsWith('csrf_token='))
+  ?.split('=')[1];
+
+fetch('/api/orders', {
+  method: 'POST',
+  credentials: 'include',
+  headers: { 'X-CSRF-Token': csrfToken ?? '' },
+  body: JSON.stringify(payload),
+});
+
+// Server — verify the CSRF header matches the CSRF cookie
+export function csrfMiddleware(req: Request, res: Response, next: NextFunction) {
+  const headerToken = req.headers['x-csrf-token'];
+  const cookieToken = req.cookies['csrf_token'];
+  if (!headerToken || headerToken !== cookieToken) {
+    return next(new ForbiddenError());
+  }
+  next();
+}
+```
+
+A cross-site attacker cannot read the CSRF cookie (same-origin policy prevents JavaScript on a different origin from reading your cookies). They cannot include the correct `X-CSRF-Token` header. The request is rejected.
+
+---
+
+## Forbidden Storage Locations
+
+These storage locations are forbidden for authentication tokens. This applies to access tokens, refresh tokens, and session IDs in all environments.
+
+| Storage location | Accessible to JavaScript? | Forbidden for tokens | Use for |
+|---|---|---|---|
+| `localStorage` | Yes | **Always** | Non-sensitive UI state only |
+| `sessionStorage` | Yes | **Always** | Non-sensitive session UI state only |
+| Non-`HttpOnly` cookie | Yes | **Always** | CSRF tokens only |
+| `HttpOnly` cookie | No | Required location | Access tokens, refresh tokens, session IDs |
+| JavaScript variable (in-memory) | Yes — but lost on page reload | Acceptable for access token only in SPAs with no server-side rendering, with refresh-on-reload | Access token (short-lived) |
+
+### In-memory storage for SPAs (exception)
+
+For a fully client-rendered SPA with no SSR, storing the access token in a JavaScript variable (not `localStorage`) is acceptable as a fallback, provided:
+1. The refresh token is in an `HttpOnly` cookie.
+2. The application refreshes the access token silently on every page load.
+3. The access token lifetime is 15 minutes or less.
+
+This means an XSS attack can steal the in-memory access token, but only for up to 15 minutes, and cannot steal the refresh token (it is `HttpOnly`). This is a weaker posture than full cookie storage — use full cookie storage when possible.
+
+### Auditing your codebase
+
+```bash
+# Find localStorage token usage
+grep -rn "localStorage.*[Tt]oken\|localStorage.*session\|localStorage.*jwt" src/ --include="*.ts" --include="*.tsx"
+
+# Find sessionStorage token usage
+grep -rn "sessionStorage.*[Tt]oken\|sessionStorage.*session" src/ --include="*.ts" --include="*.tsx"
+
+# Find Set-Cookie without HttpOnly
+grep -rn "res\.cookie\b" src/ --include="*.ts" | grep -v "httpOnly: true"
+```
+
+---
+
+## Quick Reference
+
+```typescript
+// ✅ Set access token — HttpOnly, Secure, SameSite, short lifetime
+res.cookie('access_token', token, {
+  httpOnly: true, secure: true, sameSite: 'strict',
+  path: '/', maxAge: 15 * 60 * 1000,
+});
+
+// ✅ Set refresh token — restrict path to the refresh endpoint
+res.cookie('refresh_token', refreshToken, {
+  httpOnly: true, secure: true, sameSite: 'strict',
+  path: '/auth/refresh', maxAge: 7 * 24 * 60 * 60 * 1000,
+});
+
+// ✅ Read token on the server
+const token = req.cookies['access_token'];
+
+// ✅ Include cookies in fetch requests
+fetch('/api/resource', { credentials: 'include' });
+
+// ✅ Clear cookies on logout (same attributes as when set)
+res.clearCookie('access_token', { httpOnly: true, secure: true, sameSite: 'strict', path: '/' });
+
+// ❌ localStorage.setItem('token', accessToken)
+// ❌ sessionStorage.setItem('token', accessToken)
+// ❌ res.cookie('token', value, { httpOnly: false })
+// ❌ res.cookie('token', value) // missing Secure and SameSite
+```
+
+| Task | How |
+|---|---|
+| Store access token | `HttpOnly`, `Secure`, `SameSite=Strict`, `path: /`, `maxAge: 15min` |
+| Store refresh token | `HttpOnly`, `Secure`, `SameSite=Strict`, `path: /auth/refresh`, `maxAge: 7d` |
+| Read token server-side | `req.cookies['access_token']` via `cookie-parser` |
+| Send cookies in fetch | `credentials: 'include'` |
+| Handle token expiry | Catch 401 → call `/auth/refresh` → retry, or schedule proactive refresh |
+| Log out | `res.clearCookie()` with same path and attributes as set |
+| Protect against CSRF | `SameSite=Strict` (preferred) or Double Submit Cookie with `X-CSRF-Token` header |
+| Expose token expiry to client | Return `expiresAt` timestamp in the login response body — not the token |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
