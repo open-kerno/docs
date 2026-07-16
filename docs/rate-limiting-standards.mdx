@@ -1,0 +1,457 @@
+---
+sidebar_position: 18
+title: Rate Limiting and Retry Restrictions
+description: Engineering guide for enforcing rate limits on login, payment, and checkout endpoints to prevent brute-force attacks and systemic abuse.
+author: CTO
+tags: [standards, security, rate-limiting, brute-force, payments, fraud, api]
+---
+
+# Rate Limiting and Retry Restrictions
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> An endpoint with no rate limit is an open invitation. Brute-force attacks on login, credential stuffing on account creation, and automated abuse of payment flows are not exotic threats — they happen to every product at scale. Rate limiting is a non-negotiable layer of defense on any sensitive operation.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: Limits by Endpoint Category](#the-standard-limits-by-endpoint-category)
+3. [Rate Limiting Strategies](#rate-limiting-strategies)
+4. [Implementation](#implementation)
+5. [Login and Authentication Endpoints](#login-and-authentication-endpoints)
+6. [Payment and Checkout Endpoints](#payment-and-checkout-endpoints)
+7. [Response Format and Headers](#response-format-and-headers)
+8. [Forbidden Patterns](#forbidden-patterns)
+9. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+### Brute force attacks are automated and fast
+
+**An unprotected login endpoint can be attacked at thousands of requests per second.**
+A credential stuffing attack feeds a list of leaked username/password pairs from other breaches into your login endpoint. Without rate limiting, an attacker can test millions of combinations in minutes. Because users reuse passwords, a significant percentage of those attempts will succeed. Rate limiting on failed login attempts is the primary defence against this attack class.
+
+### Payment endpoints are targets for fraud automation
+
+**Automated bots test stolen card details at scale.**
+Card testing attacks use scripts to submit small payment attempts with stolen card numbers, rotating through combinations of CVV and expiry date until one succeeds. Each failed attempt costs nothing to the attacker but triggers a chargeback fee and a risk flag from the payment processor when a real transaction eventually goes through. Without rate limiting, a single compromised IP can test hundreds of cards per minute against your checkout flow.
+
+### Abuse amplifies infrastructure cost
+
+**Unrestricted endpoints are also a denial-of-service vector.**
+Even without malicious intent, a misconfigured integration or a runaway retry loop on a client can flood a sensitive endpoint. Rate limiting protects both security and stability. An endpoint that processes payments or sends verification emails should never be callable thousands of times per minute by a single source.
+
+### Retry logic without backoff causes cascades
+
+**Aggressive client retries turn a partial outage into a full one.**
+When a service is degraded and clients retry immediately and repeatedly, request volume increases at exactly the wrong moment. This makes recovery slower and can push a degraded service into a full outage. All client-side retry logic must use exponential backoff with jitter, and servers must enforce maximum retry thresholds independently of client behaviour.
+
+> **Architectural warning:** Rate limiting in the application layer alone is insufficient. A determined attacker will rotate IPs and user agents. Application-layer limits are the last line, not the only line. Pair them with WAF rules, bot detection, and anomaly alerting at the infrastructure level.
+
+---
+
+## The Standard: Limits by Endpoint Category
+
+These limits are the minimum required thresholds. Teams may tighten them based on observed traffic patterns. Loosening them requires a security review.
+
+| Endpoint category | Key | Window | Max requests | Block duration |
+|---|---|---|---|---|
+| Login (by IP) | `login:ip:{ip}` | 15 minutes | 20 attempts | 15 minutes |
+| Login (by account) | `login:user:{userId}` | 15 minutes | 5 failed attempts | 30 minutes |
+| Password reset request | `pwd-reset:ip:{ip}` | 1 hour | 5 attempts | 1 hour |
+| Email / OTP verification | `otp:ip:{ip}` | 10 minutes | 10 attempts | 15 minutes |
+| Payment / checkout | `payment:ip:{ip}` | 1 hour | 10 attempts | 1 hour |
+| Payment (by account) | `payment:user:{userId}` | 1 hour | 10 attempts | 1 hour |
+| General API (authenticated) | `api:user:{userId}` | 1 minute | 120 requests | — (429 until window resets) |
+| General API (unauthenticated) | `api:ip:{ip}` | 1 minute | 30 requests | — (429 until window resets) |
+
+**Per-account limits are additive with per-IP limits.** Both keys are checked on every request. If either limit is exceeded, the request is rejected.
+
+---
+
+## Rate Limiting Strategies
+
+### Fixed window
+
+The simplest strategy. Count requests in a fixed time window (e.g. 00:00–01:00, 01:00–02:00). Cheap to implement but has a burst problem: an attacker can send the full quota in the last second of one window and the first second of the next, doubling the effective rate at the boundary.
+
+**Use for:** general API rate limiting where burst tolerance is acceptable.
+
+### Sliding window
+
+Tracks the count over the last N seconds relative to the current request time. No burst problem at window boundaries. Slightly more expensive in storage (requires a sorted set or similar structure).
+
+**Use for:** login, payment, and all security-sensitive endpoints.
+
+### Token bucket
+
+A bucket holds up to N tokens. Each request consumes one token. Tokens refill at a fixed rate. Allows controlled bursts (up to bucket capacity) while enforcing a sustained rate limit.
+
+**Use for:** API endpoints where brief legitimate bursts are expected (e.g. a client syncing after reconnecting).
+
+| Strategy | Burst problem | Storage cost | Recommended for |
+|---|---|---|---|
+| Fixed window | Yes | Low | General API (low risk) |
+| Sliding window | No | Medium | Login, payment, OTP |
+| Token bucket | Controlled | Medium | API with legitimate burst needs |
+
+**Default to sliding window for all security-sensitive endpoints.**
+
+### Key selection
+
+Choose the rate limit key based on the risk surface:
+
+| Key | When to use |
+|---|---|
+| IP address | Unauthenticated endpoints (login, registration, password reset) |
+| User ID | Authenticated endpoints — prevents abuse even after IP rotation |
+| IP + User ID | Payment and checkout — check both, reject if either is exceeded |
+| Device fingerprint | Supplement to IP when available (bot detection, mobile) |
+
+---
+
+## Implementation
+
+### Approved library: `rate-limiter-flexible`
+
+```bash
+npm install rate-limiter-flexible ioredis
+```
+
+`rate-limiter-flexible` supports Redis-backed sliding window and token bucket strategies, atomic operations (no race conditions), and in-memory fallback. It is the approved library for all rate limiting in Node.js services.
+
+Do not use:
+- `express-rate-limit` with its default in-memory store for distributed services — it does not share state across instances.
+- Custom counters in a relational database — not atomic enough under load, and slow.
+- No rate limiting at all on the assumption that a WAF or API gateway handles it — the application layer must enforce its own limits.
+
+### Redis-backed sliding window limiter
+
+```typescript
+import { RateLimiterRedis } from 'rate-limiter-flexible';
+import Redis from 'ioredis';
+
+const redis = new Redis(process.env.REDIS_URL);
+
+export const loginByIpLimiter = new RateLimiterRedis({
+  storeClient: redis,
+  keyPrefix: 'login:ip',
+  points: 20,           // max attempts
+  duration: 900,        // 15 minutes (seconds)
+  blockDuration: 900,   // block for 15 minutes after limit is hit
+});
+
+export const loginByUserLimiter = new RateLimiterRedis({
+  storeClient: redis,
+  keyPrefix: 'login:user',
+  points: 5,            // max failed attempts per account
+  duration: 900,        // 15 minutes
+  blockDuration: 1800,  // block for 30 minutes
+});
+```
+
+### Rate limit middleware
+
+```typescript
+import { RateLimiterRes } from 'rate-limiter-flexible';
+
+export function rateLimitLogin(req: Request, res: Response, next: NextFunction) {
+  const ip = req.ip;
+
+  loginByIpLimiter.consume(ip)
+    .then(() => next())
+    .catch((rejection: RateLimiterRes) => {
+      res.set('Retry-After', String(Math.ceil(rejection.msBeforeNext / 1000)));
+      next(new TooManyRequestsError());
+    });
+}
+```
+
+### Consuming on failed login only
+
+For the per-account limit, consume a point only on a **failed** authentication attempt. A successful login resets the counter.
+
+```typescript
+export async function login(req: Request, res: Response, next: NextFunction) {
+  const { email, password } = req.body;
+
+  try {
+    const user = await userService.findByEmail(email);
+    const valid = user && await bcrypt.compare(password, user.passwordHash);
+
+    if (!valid) {
+      // Consume a point on failure — this is what brute-force protection tracks
+      await loginByUserLimiter.consume(email).catch(() => {});
+      return next(new UnauthorizedError('Invalid credentials.'));
+    }
+
+    // Success — reset the per-account counter
+    await loginByUserLimiter.delete(email);
+
+    const token = issueToken(user);
+    res.cookie('access_token', token, { httpOnly: true, secure: true, sameSite: 'strict' });
+    res.status(200).json({ expiresAt: Date.now() + 15 * 60 * 1000 });
+
+  } catch (err) {
+    next(err);
+  }
+}
+```
+
+---
+
+## Login and Authentication Endpoints
+
+### Two-key enforcement
+
+Every login request checks both the IP-based limit and the account-based limit. Both must pass.
+
+```typescript
+export async function loginRateLimit(req: Request, res: Response, next: NextFunction) {
+  const ip = req.ip;
+  const email = req.body.email as string | undefined;
+
+  try {
+    await loginByIpLimiter.consume(ip);
+    if (email) await loginByUserLimiter.consume(email);
+    next();
+  } catch (rejection: unknown) {
+    const r = rejection as RateLimiterRes;
+    res.set('Retry-After', String(Math.ceil(r.msBeforeNext / 1000)));
+    next(new TooManyRequestsError());
+  }
+}
+```
+
+### Account lockout vs. rate limit
+
+These are different mechanisms.
+
+| Mechanism | Trigger | Duration | Managed by |
+|---|---|---|---|
+| Rate limit | Too many requests in a window | Temporary (window duration) | Redis — auto-expires |
+| Account lockout | Sustained failed login pattern detected | Until admin review or user verifies identity | Database flag + manual or automated unlock |
+
+Rate limiting is the first line — fast, automated, self-expiring. Account lockout is an escalation for persistent attack patterns. Implement both independently.
+
+### Do not leak user existence
+
+Return the same response and take the same time whether the email exists or not. Timing differences and different error messages allow attackers to enumerate valid accounts.
+
+```typescript
+// ✅ Same message, same timing regardless of whether the user exists
+if (!valid) {
+  return next(new UnauthorizedError('Invalid email or password.'));
+}
+
+// ❌ Different messages reveal whether the account exists
+if (!user) return next(new UnauthorizedError('Account not found.'));
+if (!valid) return next(new UnauthorizedError('Incorrect password.'));
+```
+
+---
+
+## Payment and Checkout Endpoints
+
+Payment endpoints require both per-IP and per-user limits, enforced simultaneously. A user legitimately making multiple purchases in a short window is rare; automated card testing is not.
+
+### Per-IP and per-user payment limiter
+
+```typescript
+export const paymentByIpLimiter = new RateLimiterRedis({
+  storeClient: redis,
+  keyPrefix: 'payment:ip',
+  points: 10,
+  duration: 3600,       // 1 hour
+  blockDuration: 3600,
+});
+
+export const paymentByUserLimiter = new RateLimiterRedis({
+  storeClient: redis,
+  keyPrefix: 'payment:user',
+  points: 10,
+  duration: 3600,
+  blockDuration: 3600,
+});
+```
+
+### Consume on declined transaction, not on every attempt
+
+A declined payment is a stronger signal than any request. Consume a point from the limit only when the payment processor returns a decline or an error — not on every checkout page load.
+
+```typescript
+export async function processPayment(userId: string, ip: string, paymentDetails: PaymentInput) {
+  const result = await paymentProvider.charge(paymentDetails);
+
+  if (!result.success) {
+    // Consume on decline — this is the card-testing signal
+    await Promise.all([
+      paymentByIpLimiter.consume(ip).catch(() => {}),
+      paymentByUserLimiter.consume(userId).catch(() => {}),
+    ]);
+
+    // Check if either limit is now exceeded
+    const [ipStatus, userStatus] = await Promise.all([
+      paymentByIpLimiter.get(ip),
+      paymentByUserLimiter.get(userId),
+    ]);
+
+    if ((ipStatus?.remainingPoints ?? 1) === 0 || (userStatus?.remainingPoints ?? 1) === 0) {
+      log.warn('PAYMENT_RATE_LIMIT_HIT', { userId, ip });
+      throw new TooManyRequestsError('Too many failed payment attempts. Please try again later.');
+    }
+
+    throw new PaymentDeclinedError(result.declineCode);
+  }
+
+  // Success — optionally reset the counters
+  await Promise.all([
+    paymentByIpLimiter.delete(ip),
+    paymentByUserLimiter.delete(userId),
+  ]);
+
+  return result;
+}
+```
+
+### Additional signals for payment abuse
+
+Rate limiting by count is a floor, not a ceiling. Also monitor and alert on:
+
+| Signal | What it indicates |
+|---|---|
+| Multiple distinct card numbers from one user in a short window | Card testing |
+| Multiple users from the same IP making payment attempts | Bot or proxy |
+| High decline rate from a specific IP range | Fraud cluster |
+| Velocity on small amounts (< $1.00) followed by a larger charge | Card testing before larger fraud |
+
+These signals feed into your fraud alerting system and may trigger manual review or temporary blocks outside the standard rate limit logic.
+
+---
+
+## Response Format and Headers
+
+A rate-limited response must return HTTP `429 Too Many Requests` with the standard error payload and `Retry-After` header.
+
+### Response body
+
+```json
+{
+  "error": {
+    "code": "RATE_LIMITED",
+    "message": "Too many requests. Please wait before trying again.",
+    "requestId": "req_01j2k3m4n5p6q7r8s9t0"
+  }
+}
+```
+
+### Required headers
+
+| Header | Value | Purpose |
+|---|---|---|
+| `Retry-After` | Seconds until the limit resets | Tells the client when it can retry |
+| `X-RateLimit-Limit` | Max requests in the window | Informational — helps clients self-throttle |
+| `X-RateLimit-Remaining` | Requests remaining in the current window | Informational |
+| `X-RateLimit-Reset` | Unix timestamp when the window resets | Informational |
+
+```typescript
+// ✅ Set all rate limit headers on every response (not just on 429)
+export function setRateLimitHeaders(res: Response, rateLimiterRes: RateLimiterRes, limit: number) {
+  res.set({
+    'X-RateLimit-Limit': String(limit),
+    'X-RateLimit-Remaining': String(rateLimiterRes.remainingPoints),
+    'X-RateLimit-Reset': String(Math.ceil((Date.now() + rateLimiterRes.msBeforeNext) / 1000)),
+  });
+}
+
+// On 429 — also set Retry-After
+res.set('Retry-After', String(Math.ceil(rejection.msBeforeNext / 1000)));
+res.status(429).json({ error: { code: 'RATE_LIMITED', message: '...', requestId } });
+```
+
+### Client retry behaviour
+
+Clients must respect the `Retry-After` header and use **exponential backoff with jitter**. Never retry immediately on a 429.
+
+```typescript
+// ✅ Exponential backoff with jitter
+async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3): Promise<Response> {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const res = await fetch(url, options);
+    if (res.status !== 429) return res;
+
+    const retryAfter = parseInt(res.headers.get('Retry-After') ?? '5', 10);
+    const jitter = Math.random() * 1000;
+    await new Promise(resolve => setTimeout(resolve, retryAfter * 1000 + jitter));
+  }
+  throw new Error('Max retries exceeded');
+}
+
+// ❌ Immediate retry on 429
+if (res.status === 429) return fetch(url, options); // amplifies the problem
+```
+
+---
+
+## Forbidden Patterns
+
+| Pattern | Why it is forbidden | Use instead |
+|---|---|---|
+| In-memory rate limiter in a multi-instance service | State is not shared — each instance has its own counters | Redis-backed limiter |
+| Rate limiting only at the API gateway | Application bypasses (internal calls, jobs) are unprotected | Application-layer enforcement + gateway |
+| Same error message timing difference for "not found" vs. "wrong password" | Allows account enumeration | Same response, same timing |
+| Immediate retry on 429 | Amplifies load on a degraded endpoint | Exponential backoff + respect `Retry-After` |
+| Consuming a limit point on every request instead of on failure | Blocks legitimate users | Consume only on the failure event |
+| Per-IP only limits on authenticated endpoints | Attacker rotates IPs after authentication | Per-user limits on authenticated endpoints |
+| Unlimited retries on payment declines | Enables card testing | Per-IP and per-user limits consumed on decline |
+| Logging the full card number or CVV in rate limit logs | PCI DSS violation | Log only masked card suffix and decline code |
+
+---
+
+## Quick Reference
+
+```typescript
+// ✅ Redis-backed sliding window limiter
+const limiter = new RateLimiterRedis({
+  storeClient: redis, keyPrefix: 'login:ip',
+  points: 20, duration: 900, blockDuration: 900,
+});
+
+// ✅ Consume and handle rejection
+limiter.consume(key)
+  .then(() => next())
+  .catch((r: RateLimiterRes) => {
+    res.set('Retry-After', String(Math.ceil(r.msBeforeNext / 1000)));
+    next(new TooManyRequestsError());
+  });
+
+// ✅ Consume on failure, delete on success (login)
+if (!valid) { await loginByUserLimiter.consume(email).catch(() => {}); }
+else { await loginByUserLimiter.delete(email); }
+
+// ✅ 429 response body
+{ "error": { "code": "RATE_LIMITED", "message": "Too many requests...", "requestId": "..." } }
+
+// ❌ In-memory store in multi-instance service
+// ❌ Consume on every request (not just failure)
+// ❌ Different error messages for "user not found" vs "wrong password"
+// ❌ Immediate retry on 429
+```
+
+| Task | How |
+|---|---|
+| Rate limit login by IP | `RateLimiterRedis`, 20 attempts / 15 min, block 15 min |
+| Rate limit login by account | `RateLimiterRedis`, 5 failed attempts / 15 min, block 30 min |
+| Consume login limit | On failed attempt only — delete key on success |
+| Rate limit payment | Per-IP and per-user, 10 declined / 1 hour, block 1 hour |
+| Consume payment limit | On payment provider decline only |
+| Signal 429 to client | HTTP 429 + `Retry-After` header + `RATE_LIMITED` error code |
+| Client retry on 429 | Read `Retry-After`, wait with exponential backoff + jitter |
+| Prevent account enumeration | Same error message and response time for all auth failures |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
