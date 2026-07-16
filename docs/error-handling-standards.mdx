@@ -1,0 +1,349 @@
+---
+sidebar_position: 10
+title: Error Handling Standards
+description: Engineering guide for returning a unified JSON error payload to clients and preventing internal details from leaking through API responses.
+author: CTO
+tags: [standards, errors, api, security, observability]
+---
+
+# Error Handling Standards
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> Every API error is a message to the client. That message must be useful, consistent, and safe. Internal details — stack traces, database errors, server paths — never leave the server.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: Unified Error Payload](#the-standard-unified-error-payload)
+3. [HTTP Status Codes](#http-status-codes)
+4. [Validation Errors](#validation-errors)
+5. [What Never Leaves the Server](#what-never-leaves-the-server)
+6. [Centralized Error Handling](#centralized-error-handling)
+7. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+Error handling has two audiences: the client that receives the response and the engineer who reads the logs. Most teams serve one well and ignore the other.
+
+### Clients get lost without structure
+
+**Inconsistent errors break client applications.**
+When one endpoint returns `{ "error": "not found" }`, another returns `{ "message": "User does not exist" }`, and a third returns an HTML 500 page, clients cannot handle errors programmatically. Frontend teams write one-off parsers for each case. Mobile apps crash on unexpected shapes. Third-party integrators give up.
+
+A single, predictable error shape means clients can write one error handler for the entire API.
+
+### Internal details reach attackers
+
+**Stack traces are a map of your system.**
+A raw stack trace in an API response shows file paths, library versions, internal function names, and sometimes SQL queries. An attacker reads this to understand your infrastructure, identify outdated dependencies with known CVEs, and craft more precise attacks. This is not theoretical — it is a standard first step in API reconnaissance.
+
+**Database errors reveal your schema.**
+A raw Postgres error like `column "user_email" of relation "users" does not exist` tells an attacker your table name, column name, and the fact you are running Postgres. Never forward a database error directly to the client.
+
+> **Architectural warning:** Assume every error response is public. If you would not write something on a billboard outside the office, it does not belong in an error response body.
+
+---
+
+## The Standard: Unified Error Payload
+
+Every error response from every service must use this exact shape.
+
+### Error payload
+
+```json
+{
+  "error": {
+    "code": "RESOURCE_NOT_FOUND",
+    "message": "The requested resource was not found.",
+    "requestId": "req_01j2k3m4n5p6q7r8s9t0"
+  }
+}
+```
+
+### Field definitions
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `error.code` | string | Yes | SCREAMING_SNAKE_CASE machine-readable code. Stable across versions. |
+| `error.message` | string | Yes | Human-readable sentence. Safe for display. No internal details. |
+| `error.requestId` | string | Yes | Unique ID for the request. Used to correlate the client report with server logs. |
+| `error.details` | array | No | Present only for validation errors. See [Validation Errors](#validation-errors). |
+
+### Before and after
+
+| Before (inconsistent) | After (standard) |
+|---|---|
+| `{ "message": "user not found" }` | `{ "error": { "code": "USER_NOT_FOUND", "message": "...", "requestId": "..." } }` |
+| `{ "error": "Unauthorized" }` | `{ "error": { "code": "UNAUTHORIZED", "message": "...", "requestId": "..." } }` |
+| Raw HTML 500 page | `{ "error": { "code": "INTERNAL_ERROR", "message": "...", "requestId": "..." } }` |
+| Postgres error string | `{ "error": { "code": "INTERNAL_ERROR", "message": "...", "requestId": "..." } }` |
+
+### Error codes
+
+Use a consistent naming convention. Codes are stable — clients may depend on them. Never change a code once it is in production; deprecate and add a new one instead.
+
+| Code | HTTP status | When to use |
+|---|---|---|
+| `VALIDATION_ERROR` | 400 | Request body or query params failed validation |
+| `UNAUTHORIZED` | 401 | No valid credentials provided |
+| `FORBIDDEN` | 403 | Credentials are valid but access is denied |
+| `RESOURCE_NOT_FOUND` | 404 | The requested resource does not exist |
+| `CONFLICT` | 409 | The request conflicts with current state (e.g. duplicate email) |
+| `UNPROCESSABLE_ENTITY` | 422 | Input is valid but the operation cannot be completed |
+| `RATE_LIMITED` | 429 | The client has sent too many requests |
+| `INTERNAL_ERROR` | 500 | An unexpected server error occurred |
+| `SERVICE_UNAVAILABLE` | 503 | A downstream dependency is unavailable |
+
+---
+
+## HTTP Status Codes
+
+The HTTP status code and the `error.code` field must agree. Do not return a 200 with an error body. Do not return a 500 for a validation failure.
+
+| Status | Meaning | Retry? |
+|---|---|---|
+| 400 | Client sent invalid input | No — fix the request |
+| 401 | Authentication required or expired | Yes — after re-authenticating |
+| 403 | Access denied | No |
+| 404 | Resource not found | No |
+| 409 | Conflict with current state | No — resolve the conflict first |
+| 422 | Input valid, operation rejected | No |
+| 429 | Too many requests | Yes — after the `Retry-After` delay |
+| 500 | Unexpected server error | Yes — with exponential backoff |
+| 503 | Service temporarily unavailable | Yes — after the `Retry-After` delay |
+
+> **Rule:** 5xx errors mean the problem is on our side. 4xx errors mean the problem is on the client side. Never use 5xx for input validation failures.
+
+---
+
+## Validation Errors
+
+When the request fails input validation, return all field errors at once. Do not return one error at a time — it forces clients to fix and retry in a loop.
+
+### Validation error payload
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "The request contains invalid fields.",
+    "requestId": "req_01j2k3m4n5p6q7r8s9t0",
+    "details": [
+      {
+        "field": "email",
+        "message": "Must be a valid email address."
+      },
+      {
+        "field": "amount",
+        "message": "Must be a positive number."
+      }
+    ]
+  }
+}
+```
+
+### `details` field definition
+
+| Field | Type | Description |
+|---|---|---|
+| `field` | string | The name of the invalid field. Use dot-notation for nested fields (e.g. `address.zipCode`). |
+| `message` | string | What is wrong with this field. Safe for display to the user. |
+
+---
+
+## What Never Leaves the Server
+
+These items must never appear in an error response body. This applies to development, staging, and production environments.
+
+| Forbidden content | Why |
+|---|---|
+| Stack traces | Exposes file paths, library versions, and internal logic |
+| Database error messages | Reveals table names, column names, and the database engine |
+| SQL queries | Exposes schema and data access patterns |
+| Internal server paths | e.g. `/home/app/src/services/payment.service.ts` |
+| Environment variable names | e.g. `DATABASE_URL is not defined` |
+| Third-party API error details | May contain keys, endpoints, or internal IDs from those systems |
+
+All of this information belongs in server-side logs, correlated by `requestId`. The client gets the `requestId` to report the issue; the engineer uses it to find the full details in the log system.
+
+```typescript
+// ❌ Wrong — raw error forwarded to client
+app.use((err, req, res, next) => {
+  res.status(500).json({ error: err.message, stack: err.stack });
+});
+
+// ✅ Correct — internal details go to logs, safe message goes to client
+app.use((err, req, res, next) => {
+  const requestId = req.requestId;
+  log.error('UNHANDLED_ERROR', { requestId, error: err.message, stack: err.stack });
+  res.status(500).json({
+    error: {
+      code: 'INTERNAL_ERROR',
+      message: 'An unexpected error occurred. Please try again.',
+      requestId,
+    },
+  });
+});
+```
+
+---
+
+## Centralized Error Handling
+
+Error formatting must happen in one place. Do not write `res.status(500).json(...)` across every route handler. One central error handler formats every error the same way.
+
+### Application error class
+
+Define a base error class that carries the `code`, HTTP status, and a safe message. All intentional errors in the application extend this class.
+
+```typescript
+export class AppError extends Error {
+  constructor(
+    public readonly code: string,
+    public readonly statusCode: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'AppError';
+  }
+}
+
+export class NotFoundError extends AppError {
+  constructor(resource = 'Resource') {
+    super('RESOURCE_NOT_FOUND', 404, `${resource} not found.`);
+  }
+}
+
+export class ForbiddenError extends AppError {
+  constructor() {
+    super('FORBIDDEN', 403, 'You do not have permission to perform this action.');
+  }
+}
+
+export class ValidationError extends AppError {
+  constructor(public readonly details: { field: string; message: string }[]) {
+    super('VALIDATION_ERROR', 400, 'The request contains invalid fields.');
+  }
+}
+```
+
+### Central error handler (Express)
+
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { AppError, ValidationError } from './errors';
+import { log } from './logger';
+
+export function errorHandler(err: Error, req: Request, res: Response, next: NextFunction) {
+  const requestId = req.requestId ?? crypto.randomUUID();
+
+  if (err instanceof AppError) {
+    // Known error — log at warn level, safe message to client
+    log.warn('APP_ERROR', { requestId, code: err.code, message: err.message });
+
+    const body: Record<string, unknown> = {
+      code: err.code,
+      message: err.message,
+      requestId,
+    };
+
+    if (err instanceof ValidationError) {
+      body.details = err.details;
+    }
+
+    return res.status(err.statusCode).json({ error: body });
+  }
+
+  // Unknown error — log full details, return generic message
+  log.error('UNHANDLED_ERROR', { requestId, error: err.message, stack: err.stack });
+
+  return res.status(500).json({
+    error: {
+      code: 'INTERNAL_ERROR',
+      message: 'An unexpected error occurred. Please try again.',
+      requestId,
+    },
+  });
+}
+```
+
+Register it last, after all routes:
+
+```typescript
+app.use(errorHandler);
+```
+
+### Throwing errors in service code
+
+```typescript
+// ✅ Throw an AppError — the central handler formats it
+async function getUser(userId: string) {
+  const user = await db.users.findById(userId);
+  if (!user) throw new NotFoundError('User');
+  return user;
+}
+
+// ❌ Wrong — formatting the response inside the service
+async function getUser(userId: string, res: Response) {
+  const user = await db.users.findById(userId);
+  if (!user) return res.status(404).json({ message: 'not found' });
+  return user;
+}
+```
+
+### Request ID propagation
+
+Every request must have a unique ID from the moment it enters the system. Attach it in middleware, before any route handler runs.
+
+```typescript
+app.use((req, _res, next) => {
+  req.requestId = req.headers['x-request-id'] as string ?? crypto.randomUUID();
+  next();
+});
+```
+
+Pass `requestId` to every log call and include it in every error response. This is the link between the client report and the server log.
+
+---
+
+## Quick Reference
+
+```typescript
+// ✅ Throw known errors
+throw new NotFoundError('Order');
+throw new ForbiddenError();
+throw new ValidationError([{ field: 'email', message: 'Must be a valid email.' }]);
+
+// ✅ Standard error response shape
+{
+  "error": {
+    "code": "RESOURCE_NOT_FOUND",
+    "message": "Order not found.",
+    "requestId": "req_01j2k3m4n5p6q7r8s9t0"
+  }
+}
+
+// ✅ Stack trace → logs only (correlated by requestId)
+// ❌ Stack trace → response body
+// ❌ Database error → response body
+// ❌ res.status(200).json({ error: "..." })
+// ❌ Different error shapes across endpoints
+```
+
+| Task | How |
+|---|---|
+| Return a not found error | `throw new NotFoundError('Resource name')` |
+| Return a permission error | `throw new ForbiddenError()` |
+| Return validation errors | `throw new ValidationError([{ field, message }])` |
+| Return an unexpected error | Let it propagate — the central handler returns `INTERNAL_ERROR` |
+| Log the full error details | Use `log.error(...)` with `requestId`, `message`, and `stack` |
+| Correlate a client report to logs | Use the `requestId` from the error response |
+| Prevent stack trace exposure | Never pass `err.stack` to `res.json()` |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
