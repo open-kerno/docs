@@ -1,0 +1,331 @@
+---
+sidebar_position: 11
+title: Identifier (ID) Strategy
+description: Engineering guide for choosing between UUID v7 and auto-incrementing integer IDs in databases and APIs.
+author: CTO
+tags: [standards, database, uuid, identifiers, security, api]
+---
+
+# Identifier (ID) Strategy
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> Every row in every table has an ID. The type of ID you choose affects security, performance, and how your API behaves in public. Choose deliberately, not by default.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard at a Glance](#the-standard-at-a-glance)
+3. [UUID v7: The Default Choice](#uuid-v7-the-default-choice)
+4. [Auto-Incrementing Integers: When They Are Allowed](#auto-incrementing-integers-when-they-are-allowed)
+5. [Database Setup](#database-setup)
+6. [API Rules](#api-rules)
+7. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+A database ID is not just a technical detail. It appears in URLs, API responses, logs, and sometimes in emails. The wrong choice creates real problems.
+
+### Sequential IDs expose your business
+
+**Auto-incrementing IDs leak information.**
+When a URL contains `/orders/1042`, anyone can guess that `/orders/1041` exists and belongs to another user. More importantly, they can count. If a competitor creates an order today and another order next week, they can calculate exactly how many orders you processed in between. This is called **enumeration** — and it is one of the most common ways business data leaks without a breach.
+
+**Sequential IDs make IDOR attacks easy.**
+IDOR (Insecure Direct Object Reference) is a vulnerability where a user changes an ID in the URL to access another user's data. Sequential integers make this trivial: increment by one and try. Random UUIDs do not prevent IDOR — authorization checks do — but they remove the easy guessing step.
+
+### Random IDs hurt database performance
+
+**Fully random UUIDs (v4) fragment indexes.**
+A UUID v4 is completely random. When you insert a new row, the database must place it somewhere in the middle of the index — not at the end. Over millions of rows, this causes **index fragmentation**: the index grows disorganized, reads slow down, and write performance drops. This is a well-documented problem with UUID v4 at scale.
+
+**UUID v7 solves this.**
+UUID v7 is time-ordered. The first bytes encode a millisecond timestamp, so new rows are always appended to the end of the index — the same as auto-incrementing integers. You get the randomness needed for security and the sequential inserts needed for performance.
+
+> **Architectural warning:** Do not use UUID v4 as a primary key for high-write tables. The index fragmentation at scale is real and has caused production performance incidents at companies of our size. Use UUID v7.
+
+---
+
+## The Standard at a Glance
+
+| Use case | ID type | Reason |
+|---|---|---|
+| All tables: primary key | UUID v7 | Time-ordered, non-guessable, globally unique |
+| All APIs: public-facing ID | UUID v7 | No enumeration, no business data leakage |
+| Internal join tables (no public ID) | Auto-increment integer | Never exposed, write performance for large tables |
+| Surrogate key alongside UUID | Auto-increment integer | Allowed as an internal `row_id` — never exposed |
+| Event IDs, request IDs | UUID v7 | Time-ordered helps with log correlation |
+
+---
+
+## UUID v7: The Default Choice
+
+UUID v7 is the recommended ID format for all new tables. It is defined in [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562) and combines a millisecond-precision timestamp with random bits.
+
+### Structure
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+├─────────────────────────────────────────────────┤ timestamp (48 bits)
+                                                   ├─┤ version = 7 (4 bits)
+                                                     ├───────────────────┤ random (74 bits)
+```
+
+A UUID v7 looks like any other UUID:
+```
+01966a4e-1d40-7c3b-a921-4f2b3c1d5e6f
+└──────────────┘
+  timestamp prefix — rows sort chronologically
+```
+
+### Properties
+
+| Property | Value |
+|---|---|
+| Format | Standard UUID string (36 chars with hyphens) |
+| Sortable | Yes — lexicographic sort = chronological sort |
+| Collision-safe | Yes — 74 random bits per millisecond |
+| Index-friendly | Yes — monotonically increasing, no fragmentation |
+| Guessable | No — random bits make prediction impossible |
+| Globally unique | Yes — no coordination required across services |
+
+### Generating UUID v7 in TypeScript
+
+```typescript
+// ✅ Use the uuid package (already installed in most services)
+import { v7 as uuidv7 } from 'uuid';
+
+const id = uuidv7();
+// '01966a4e-1d40-7c3b-a921-4f2b3c1d5e6f'
+```
+
+```bash
+npm install uuid
+```
+
+```typescript
+// ✅ With type safety
+import { v7 as uuidv7 } from 'uuid';
+
+interface User {
+  id: string; // UUID v7
+  email: string;
+}
+
+async function createUser(email: string): Promise<User> {
+  const user = { id: uuidv7(), email };
+  await db.users.insert(user);
+  return user;
+}
+```
+
+### Comparing UUID versions
+
+| Version | Ordered? | Secure? | Index-friendly? | Use |
+|---|---|---|---|---|
+| v4 | No | Yes | No — fragments index at scale | **Avoid as primary key** |
+| v7 | Yes | Yes | Yes | **Required** |
+| v1 | Yes | No — encodes MAC address | Yes | Forbidden — leaks hardware info |
+
+---
+
+## Auto-Incrementing Integers: When They Are Allowed
+
+Auto-incrementing integers are allowed in two specific cases. In all other cases, use UUID v7.
+
+### 1. Pure internal join tables
+
+A join table that links two entities (e.g. `user_roles`, `post_tags`) and is never referenced by ID in any API response may use an auto-incrementing integer as its primary key.
+
+```sql
+-- ✅ Allowed — join table, ID never exposed
+CREATE TABLE user_roles (
+  id          SERIAL PRIMARY KEY,
+  user_id     UUID NOT NULL REFERENCES users(id),
+  role_id     UUID NOT NULL REFERENCES roles(id),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+### 2. Internal surrogate key alongside a UUID
+
+Some ORMs or reporting tools work better with integer keys. You may add an internal `row_id` integer column alongside a UUID primary key. The integer is never returned by the API.
+
+```sql
+-- ✅ Allowed — UUID is the primary key; integer is internal only
+CREATE TABLE orders (
+  id         UUID PRIMARY KEY DEFAULT gen_uuid_v7(),
+  row_id     BIGINT GENERATED ALWAYS AS IDENTITY, -- internal, never exposed
+  user_id    UUID NOT NULL REFERENCES users(id),
+  amount     NUMERIC(12, 2) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+### What is never allowed
+
+| Forbidden | Reason |
+|---|---|
+| Integer primary key on any user-facing table | Enumeration and IDOR risk |
+| Integer ID in any API response | Same as above |
+| Integer ID in any URL | Same as above |
+| UUID v4 as primary key on high-write tables | Index fragmentation at scale |
+
+---
+
+## Database Setup
+
+### PostgreSQL: UUID v7 default
+
+PostgreSQL does not have a built-in `gen_uuid_v7()` function yet. Install the `pg_uuidv7` extension or use a trigger. The recommended approach is the extension.
+
+```sql
+-- Install the extension (run once per database)
+CREATE EXTENSION IF NOT EXISTS "pg_uuidv7";
+
+-- Use as column default
+CREATE TABLE payments (
+  id         UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+  amount     NUMERIC(12, 2) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+If the extension is not available, generate UUID v7 in the application layer and pass it explicitly:
+
+```typescript
+// ✅ Generate in application, pass to insert
+import { v7 as uuidv7 } from 'uuid';
+
+await db.query(
+  'INSERT INTO payments (id, amount) VALUES ($1, $2)',
+  [uuidv7(), amount]
+);
+```
+
+### Prisma
+
+```prisma
+model User {
+  id        String   @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  email     String   @unique
+  createdAt DateTime @default(now())
+}
+```
+
+If `pg_uuidv7` is not available, generate in the application:
+
+```prisma
+model User {
+  id        String   @id @db.Uuid
+  email     String   @unique
+  createdAt DateTime @default(now())
+}
+```
+
+```typescript
+import { v7 as uuidv7 } from 'uuid';
+
+await prisma.user.create({ data: { id: uuidv7(), email } });
+```
+
+### Index on UUID v7
+
+UUID v7 columns used in foreign key references or frequent lookups need a standard B-tree index. No special index type is required — UUID v7's time-ordered nature makes B-tree efficient.
+
+```sql
+-- ✅ Standard index — works well with UUID v7
+CREATE INDEX idx_orders_user_id ON orders(user_id);
+
+-- No need for BRIN or special index types for UUID v7 primary keys
+```
+
+---
+
+## API Rules
+
+### Always use UUID in API responses
+
+No integer ID may appear in an API response body or URL path, even if it exists internally.
+
+```typescript
+// ❌ Wrong — integer ID in response
+res.json({ id: 42, email: user.email });
+
+// ✅ Correct — UUID only
+res.json({ id: user.id, email: user.email }); // user.id is UUID v7
+```
+
+### URLs use UUID
+
+```
+✅  GET /users/01966a4e-1d40-7c3b-a921-4f2b3c1d5e6f
+❌  GET /users/42
+```
+
+### Validate UUID format on input
+
+When a UUID arrives as a URL parameter or request body field, validate the format before using it. This prevents malformed inputs from reaching the database.
+
+```typescript
+import { validate as isUuid } from 'uuid';
+
+function getUserById(id: string) {
+  if (!isUuid(id)) throw new ValidationError([{ field: 'id', message: 'Must be a valid UUID.' }]);
+  return db.users.findById(id);
+}
+```
+
+### Do not expose row_id
+
+If your schema has an internal `row_id` integer, make sure your ORM or query builder never selects it in responses.
+
+```typescript
+// ✅ Explicit field selection — row_id excluded
+const user = await prisma.user.findUnique({
+  where: { id },
+  select: { id: true, email: true, createdAt: true },
+  // row_id is not selected
+});
+```
+
+---
+
+## Quick Reference
+
+```typescript
+// ✅ Generate a UUID v7
+import { v7 as uuidv7 } from 'uuid';
+const id = uuidv7();
+
+// ✅ Validate a UUID on input
+import { validate as isUuid } from 'uuid';
+if (!isUuid(id)) throw new ValidationError([{ field: 'id', message: 'Must be a valid UUID.' }]);
+
+// ✅ Insert with UUID v7
+await db.query('INSERT INTO orders (id, amount) VALUES ($1, $2)', [uuidv7(), amount]);
+
+// ❌ Never return an integer ID
+res.json({ id: row.rowId }); // forbidden
+
+// ❌ Never use UUID v4 as a primary key on high-write tables
+import { v4 as uuidv4 } from 'uuid'; // use v7 instead
+```
+
+| Task | How |
+|---|---|
+| Generate a new ID | `uuidv7()` from the `uuid` package |
+| Default ID in PostgreSQL | `uuid_generate_v7()` via `pg_uuidv7` extension |
+| Default ID in Prisma | `@default(dbgenerated("uuid_generate_v7()"))` or pass `uuidv7()` from the app |
+| Validate an incoming ID | `isUuid(id)` from the `uuid` package |
+| Use integers | Join tables or internal `row_id` only — never in API responses |
+| Expose an ID in the API | UUID v7 only |
+| Sort records by creation time | Sort by `id` — UUID v7 is time-ordered |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
