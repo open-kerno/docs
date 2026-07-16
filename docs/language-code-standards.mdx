@@ -1,0 +1,294 @@
+---
+sidebar_position: 26
+title: Language Code Standards
+description: Engineering guide for storing and validating language identifiers using the ISO 639-1 two-letter format across all systems.
+author: CTO
+tags: [standards, language-code, iso639, i18n, localization, typescript, go]
+---
+
+# Language Code Standards
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> This is not a suggestion. Every system that identifies a user's language, stores content by language, or drives localization logic must follow this guide.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: ISO 639-1](#the-standard-iso-639-1)
+3. [language\_code vs locale: A Critical Distinction](#language_code-vs-locale-a-critical-distinction)
+4. [Official Tooling](#official-tooling)
+5. [Database Best Practices](#database-best-practices)
+6. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+A language identifier looks trivial. It is two letters. But when different services use different formats — `EN`, `en`, `en-US`, `english`, `eng` — joins fail, translation pipelines skip content, and users see the wrong language.
+
+### What Goes Wrong Without a Standard
+
+**Content is not served in the correct language.**
+If the user profile service stores `EN` and the content service queries for `en`, the lookup returns nothing. The user receives the default language — usually English — regardless of their actual preference. This is a silent failure that is hard to detect in testing.
+
+**Translation pipelines silently skip records.**
+Automated translation jobs filter by `language_code`. If the field contains `eng` (ISO 639-2, three letters) in one table and `en` (ISO 639-1) in another, the pipeline does not process half the records. Translated content is never generated and never surfaced.
+
+**Analytics and reporting segment incorrectly.**
+Language-level reporting (conversion by language, support volume by language) requires consistent values to group on. Mixed formats produce one row per variant: `en`, `EN`, `en-US`, and `english` each appear as a separate segment. Every metric is undercounted.
+
+**i18n libraries receive unsupported input.**
+Standard i18n libraries (`i18next`, Go's `golang.org/x/text`) accept specific formats. Passing `english` or `ENG` causes a fallback to the default locale silently — no error is raised, the wrong language is shown.
+
+> **Architectural warning:** Language code inconsistencies are invisible in development because developers typically test in one language. They appear in production when the first non-default-language user reports seeing the wrong content. By then, the inconsistent data is already spread across multiple tables.
+
+---
+
+## The Standard: ISO 639-1
+
+We store all `language_code` values using **ISO 639-1**: the international standard two-letter language code, always **lowercase**.
+
+### Format Rules
+
+```
+[two lowercase letters defined by ISO 639-1]
+```
+
+| Component | Rule | Example |
+|---|---|---|
+| Length | Always 2 characters | `en`, `es`, `pt` |
+| Case | Always lowercase | `es` not `ES` or `Es` |
+| Source standard | ISO 639-1 only | 184 defined codes |
+| No region suffix | Language only — no country or script | `pt` not `pt-BR` |
+
+### Reference: Common Language Codes
+
+| Language | `language_code` |
+|---|---|
+| English | `en` |
+| Spanish | `es` |
+| Portuguese | `pt` |
+| French | `fr` |
+| German | `de` |
+| Italian | `it` |
+| Dutch | `nl` |
+| Polish | `pl` |
+| Russian | `ru` |
+| Japanese | `ja` |
+| Korean | `ko` |
+| Mandarin Chinese | `zh` |
+| Arabic | `ar` |
+| Hindi | `hi` |
+| Turkish | `tr` |
+
+### Normalization Rules
+
+| Raw Input | Stored Value |
+|---|---|
+| `EN` | `en` |
+| `Es` | `es` |
+| `PT` | `pt` |
+| `en-US` | ❌ Invalid for this field — use `locale` field instead |
+| `eng` | ❌ Invalid — this is ISO 639-2 (three letters), not ISO 639-1 |
+| `english` | ❌ Invalid — full names are not accepted |
+| `xx` | ❌ Invalid — not an assigned ISO 639-1 code |
+
+> **Rule:** Accept input in any case. Lowercase it. Reject anything that is not exactly two characters or is not a valid ISO 639-1 code. Do not silently fall back to a default — an invalid code must produce an error.
+
+---
+
+## language\_code vs locale: A Critical Distinction
+
+These are two different fields with two different purposes. They must not be conflated.
+
+| Field | Format | Standard | Example | Purpose |
+|---|---|---|---|---|
+| `language_code` | 2 letters, lowercase | ISO 639-1 | `es` | Identifies the language of content or user preference |
+| `locale` | `language-REGION` | BCP 47 (IETF) | `es-MX` | Drives formatting: dates, numbers, currency symbols |
+
+### When to use `language_code`
+
+- Storing which language a piece of content is written in.
+- Storing a user's preferred language for UI and communication.
+- Filtering or querying content by language.
+- Routing to a translation pipeline.
+
+### When to use `locale`
+
+- Formatting a date: `01/12/2025` (en-US) vs `12/01/2025` (en-GB).
+- Formatting currency: `$1,234.56` (en-US) vs `€1.234,56` (de-DE).
+- Formatting numbers and units.
+- Passing to i18n libraries that need region-specific pluralization rules.
+
+> **Rule:** A schema that needs both stores them in two separate columns. Do not compress locale into `language_code` by storing `en-US` — it breaks every lookup and validation that expects two letters.
+
+### Deriving locale from language\_code
+
+When you have `language_code` but need a locale for formatting, derive a default locale from the language code using the user's country or a configured regional default. Do not guess.
+
+```
+language_code = "pt" + user country = "BR"  →  locale = "pt-BR"
+language_code = "pt" + user country = "PT"  →  locale = "pt-PT"
+language_code = "zh" + user country = "TW"  →  locale = "zh-TW"
+```
+
+---
+
+## Official Tooling
+
+Use the approved libraries for validation. Do not maintain a local hardcoded list of language codes — it will go stale when ISO 639-1 is updated.
+
+---
+
+### TypeScript / JavaScript
+
+**Package:** [`iso-639-1`](https://www.npmjs.com/package/iso-639-1)
+
+```bash
+npm install iso-639-1
+```
+
+**Why this package:**
+
+- Covers all 184 ISO 639-1 assigned codes.
+- Provides `validate(code)` — no regex needed.
+- Provides `getName(code)` for display purposes.
+- Zero runtime dependencies.
+- Maintained against the ISO standard.
+
+```ts
+import ISO6391 from 'iso-639-1';
+
+function normalizeLanguageCode(raw: string): string {
+  const normalized = raw.toLowerCase().trim();
+  if (!ISO6391.validate(normalized)) {
+    throw new Error(`Invalid language_code: "${raw}"`);
+  }
+  return normalized;
+}
+```
+
+Do not use `/^[a-z]{2}$/` regex validation alone. It accepts `xx`, `zz`, and other unassigned codes that are not valid ISO 639-1 identifiers. Always validate against the actual code list.
+
+---
+
+### Go
+
+**Package:** [`golang.org/x/text/language`](https://pkg.go.dev/golang.org/x/text/language)
+
+```bash
+go get golang.org/x/text/language
+```
+
+**Why this package:**
+
+- Part of the official Go extended standard library.
+- Handles BCP 47 parsing and ISO 639-1 validation.
+- Used by the Go runtime itself for locale handling.
+- No third-party dependencies.
+
+```go
+import (
+    "fmt"
+    "strings"
+    "golang.org/x/text/language"
+)
+
+func normalizeLanguageCode(raw string) (string, error) {
+    normalized := strings.ToLower(strings.TrimSpace(raw))
+    tag, err := language.Parse(normalized)
+    if err != nil {
+        return "", fmt.Errorf("invalid language_code %q: %w", raw, err)
+    }
+    base, conf := tag.Base()
+    if conf == language.No {
+        return "", fmt.Errorf("unrecognized language_code: %q", raw)
+    }
+    return base.String(), nil
+}
+```
+
+Do not write a custom switch statement or map over language codes. The list has 184 entries and changes over time. Use the library.
+
+---
+
+## Database Best Practices
+
+### Column Type
+
+Store `language_code` values as `CHAR(2)`. The value is always exactly two characters after normalization.
+
+| Decision | Recommendation |
+|---|---|
+| **Type** | `CHAR(2)` |
+| **Case** | Always lowercase — enforce with a `CHECK` constraint |
+| **Nullable** | Only if language is genuinely optional for the entity |
+| **Default** | Set a sensible default only if your product has a clear primary language; otherwise `NULL` |
+| **Encoding** | Plain ASCII — only lowercase letters `a–z` |
+
+```sql
+-- PostgreSQL: enforce lowercase and valid character set
+ALTER TABLE users
+  ADD COLUMN language_code CHAR(2)
+  CHECK (language_code = lower(language_code) AND language_code ~ '^[a-z]{2}$');
+```
+
+> The `CHECK` constraint enforces format. Application-level validation (via the approved library) enforces that the code is actually assigned in ISO 639-1. Both layers are necessary — the DB constraint is the last-resort guard.
+
+### Default Value Strategy
+
+| Scenario | Recommended default |
+|---|---|
+| Product serves one primary market | Hardcode the default: `'en'`, `'es'`, etc. |
+| Product serves multiple markets equally | `NULL` — require the value to be set explicitly |
+| Migrating from a system with no language field | Audit the data; do not assume `'en'` |
+
+### Indexes
+
+Index `language_code` when it appears in `WHERE` clauses or drives content queries.
+
+```sql
+-- Content table: filter all records by language
+CREATE INDEX idx_articles_language_code ON articles (language_code);
+
+-- Users table: composite index for language + status filtering
+CREATE INDEX idx_users_lang_active ON users (language_code, is_active);
+```
+
+---
+
+## Quick Reference
+
+```
+✅  Store as: en  |  es  |  pt  |  fr  |  de
+❌  Never store: EN  |  en-US  |  eng  |  english  |  en_US
+```
+
+| Task | How |
+|---|---|
+| Accept raw input | Trim whitespace, lowercase, validate against ISO 639-1 list |
+| Validate in TypeScript | `ISO6391.validate(normalized)` from `iso-639-1` |
+| Validate in Go | `language.Parse(normalized)` from `golang.org/x/text/language` |
+| Store in DB | `CHAR(2)`, lowercase, `CHECK` constraint, index if filtered |
+| Display to user | `ISO6391.getName('es')` → `"Spanish"` |
+| Derive locale for formatting | Combine `language_code` + user country → BCP 47 locale |
+| Store locale separately | Use a separate `locale` column (`CHAR(5)–VARCHAR(10)`) |
+
+| Language | `language_code` | Example locale |
+|---|---|---|
+| English | `en` | `en-US`, `en-GB` |
+| Spanish | `es` | `es-MX`, `es-ES` |
+| Portuguese | `pt` | `pt-BR`, `pt-PT` |
+| French | `fr` | `fr-FR`, `fr-CA` |
+| Chinese | `zh` | `zh-CN`, `zh-TW` |
+
+| Language | Approved package |
+|---|---|
+| Node.js / TypeScript | [`iso-639-1`](https://www.npmjs.com/package/iso-639-1) |
+| Go | [`golang.org/x/text/language`](https://pkg.go.dev/golang.org/x/text/language) |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
