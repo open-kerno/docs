@@ -1,0 +1,413 @@
+---
+sidebar_position: 13
+title: Quality Gates (CI/CD)
+description: Engineering guide for mandatory test coverage thresholds and static analysis checks that must pass before any deployment to production.
+author: CTO
+tags: [standards, ci-cd, testing, coverage, sonarqube, quality]
+---
+
+# Quality Gates (CI/CD)
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> Code that is not tested is a guess. Code that is not analyzed is a risk. Before anything reaches production, it must pass the gates in this guide. No exceptions, no manual overrides.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard at a Glance](#the-standard-at-a-glance)
+3. [Test Coverage](#test-coverage)
+4. [Static Code Analysis](#static-code-analysis)
+5. [CI Pipeline Structure](#ci-pipeline-structure)
+6. [Blocking vs. Non-Blocking Rules](#blocking-vs-non-blocking-rules)
+7. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+A quality gate is a hard stop in the deployment pipeline. If it fails, the deployment does not continue. This section explains what goes wrong when gates are skipped or set too low.
+
+### Bugs reach production silently
+
+**Low coverage means untested paths go live.**
+A service with 40% test coverage means 60% of the code has never been executed in a controlled environment. A change to a shared utility function, a new edge case in a payment flow, a null reference in an error handler — none of these are caught before deployment. The first person to discover them is a user.
+
+**Static analysis finds what tests cannot.**
+A test checks that code does what it is supposed to do. A static analyzer checks that code is not doing something dangerous — a SQL injection pattern, a hardcoded secret, a variable used before it is defined, a dependency with a known CVE. These are structural problems that do not require a test case to detect.
+
+### Manual reviews are not enough
+
+**Pull request reviews miss systematic issues.**
+A human reviewer is good at evaluating logic and design. They are bad at consistently catching every unused variable, every missing `await`, every weak cipher, or every function that is 300 lines long. Static analysis does this automatically and consistently on every single commit.
+
+### One bad deploy can block the whole team
+
+**A broken main branch stops everyone.**
+When code with a failing test or a critical vulnerability merges to main, every engineer who pulls main gets a broken environment. The cost of fixing a broken main — investigation time, reverts, re-reviews — is always higher than the cost of a failing CI gate.
+
+> **Architectural warning:** Never add a CI bypass without a written record of who approved it and why. Bypasses must be reviewed and removed within 24 hours. A bypass that stays becomes the new default — and the gate stops existing.
+
+---
+
+## The Standard at a Glance
+
+| Gate | Threshold | Blocks deploy? |
+|---|---|---|
+| Unit + integration test coverage (lines) | **80% minimum** | Yes |
+| Unit + integration test coverage (branches) | **75% minimum** | Yes |
+| Static analysis: critical issues | **0 allowed** | Yes |
+| Static analysis: high issues | **0 new issues** allowed per PR | Yes |
+| Static analysis: medium issues | Must not increase total count | Yes |
+| Dependency vulnerabilities (critical/high CVE) | **0 allowed** | Yes |
+| All tests passing | 100% | Yes |
+| Type checking (`tsc --noEmit`) | 0 errors | Yes |
+| Linting (`eslint`) | 0 errors | Yes |
+
+---
+
+## Test Coverage
+
+Test coverage measures how much of the codebase is executed during the test suite. We track two dimensions: **line coverage** and **branch coverage**.
+
+### Thresholds
+
+| Coverage type | Minimum | Description |
+|---|---|---|
+| Line coverage | **80%** | At least 80% of all lines must be executed by tests |
+| Branch coverage | **75%** | At least 75% of all `if/else`, `switch`, and ternary branches must be tested |
+
+Branch coverage matters more than line coverage. A function can have 100% line coverage but still miss the `else` path of a condition. Both thresholds must be met independently.
+
+### What counts toward coverage
+
+| Included | Excluded |
+|---|---|
+| Business logic, services, utilities | Database migration files |
+| API route handlers | Generated code (Prisma client, GraphQL types) |
+| Error handling paths | Test files themselves |
+| Shared libraries | Configuration files (`*.config.ts`) |
+| Authentication and authorization logic | Third-party type definitions (`node_modules`) |
+
+Configure exclusions explicitly — do not rely on defaults.
+
+### Coverage in CI (Vitest)
+
+```typescript
+// vitest.config.ts
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov', 'json-summary'],
+      thresholds: {
+        lines: 80,
+        branches: 75,
+        functions: 80,
+        statements: 80,
+      },
+      exclude: [
+        'src/**/*.config.ts',
+        'src/generated/**',
+        'src/migrations/**',
+        '**/*.d.ts',
+      ],
+    },
+  },
+});
+```
+
+Running coverage locally:
+
+```bash
+# Run tests with coverage — same command as CI
+npx vitest run --coverage
+
+# Coverage report is written to ./coverage/
+# Open coverage/index.html to browse by file
+```
+
+CI fails automatically if any threshold is not met. The exit code is non-zero and the pipeline stops.
+
+### Jest (alternative)
+
+```javascript
+// jest.config.js
+module.exports = {
+  coverageThreshold: {
+    global: {
+      lines: 80,
+      branches: 75,
+      functions: 80,
+      statements: 80,
+    },
+  },
+  coveragePathIgnorePatterns: [
+    '/node_modules/',
+    '/src/generated/',
+    '/src/migrations/',
+  ],
+  collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts'],
+};
+```
+
+```bash
+npx jest --coverage
+```
+
+### Writing tests that count
+
+Coverage is a floor, not a goal. Tests that exist only to raise a number — calling a function without asserting its output — are worse than useless. They pass the gate and give false confidence.
+
+```typescript
+// ❌ Wrong — executes the line, asserts nothing useful
+it('calls createOrder', () => {
+  createOrder({ amount: 100 });
+  expect(true).toBe(true);
+});
+
+// ✅ Correct — tests the actual behavior
+it('returns the created order with the correct amount', async () => {
+  const order = await createOrder({ amount: 100, userId: 'usr_123' });
+  expect(order.amount).toBe(100);
+  expect(order.id).toMatch(/^[0-9a-f-]{36}$/);
+});
+```
+
+> **Rule:** A test must have at least one assertion on the output of the code it covers. A test with no assertion on the result is not a test.
+
+---
+
+## Static Code Analysis
+
+Static analysis reads the source code without running it. It finds bugs, security vulnerabilities, and code quality problems that tests and code review miss.
+
+### Required tool: SonarQube
+
+All services must be connected to SonarQube. Analysis runs on every pull request and every merge to `main`.
+
+```bash
+# Install the SonarQube scanner
+npm install --save-dev sonarqube-scanner
+
+# Run analysis locally (requires SONAR_TOKEN)
+npx sonar-scanner \
+  -Dsonar.projectKey=my-service \
+  -Dsonar.sources=src \
+  -Dsonar.host.url=$SONAR_HOST_URL \
+  -Dsonar.token=$SONAR_TOKEN \
+  -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+```
+
+### SonarQube configuration file
+
+```properties
+# sonar-project.properties
+sonar.projectKey=my-service
+sonar.projectName=My Service
+sonar.sources=src
+sonar.tests=src
+sonar.test.inclusions=**/*.test.ts,**/*.spec.ts
+sonar.exclusions=src/generated/**,src/migrations/**,**/*.d.ts
+sonar.javascript.lcov.reportPaths=coverage/lcov.info
+sonar.typescript.tsconfigPath=tsconfig.json
+```
+
+### Severity levels and gates
+
+SonarQube classifies issues into five severity levels. The gate rules are:
+
+| Severity | Examples | Gate rule |
+|---|---|---|
+| **Critical** | SQL injection, hardcoded credentials, broken crypto | 0 allowed — blocks deploy immediately |
+| **High** | Missing authentication check, XSS vector, null dereference | 0 new per PR — blocks deploy |
+| **Medium** | Duplicated logic, long functions, missing error handling | Total count must not increase |
+| **Low** | Minor style issues, unused imports | Informational — does not block |
+| **Info** | Code suggestions | Informational — does not block |
+
+### Security hotspots
+
+SonarQube flags **security hotspots** separately from issues. A hotspot is a pattern that may or may not be a vulnerability depending on context. Every security hotspot must be reviewed and marked as either `Safe` or `To fix` before the PR can merge. It is not acceptable to leave hotspots unreviewed.
+
+### What SonarQube checks
+
+| Category | Examples |
+|---|---|
+| Security vulnerabilities | Hardcoded secrets, SQL injection, XSS, weak crypto |
+| Reliability bugs | Null pointer dereference, unused promises, off-by-one errors |
+| Code smells | Functions over 40 lines, cognitive complexity above 15, duplicated blocks |
+| Coverage | Integrates with the LCOV report from your test runner |
+| Dependency vulnerabilities | Known CVEs in `package.json` dependencies |
+
+### Dependency vulnerability scanning
+
+In addition to SonarQube, run `npm audit` in CI as a separate gate.
+
+```bash
+# Fails if any critical or high severity CVE is found
+npm audit --audit-level=high
+```
+
+| Severity | Gate rule |
+|---|---|
+| Critical | 0 allowed — blocks deploy |
+| High | 0 allowed — blocks deploy |
+| Moderate | Must have an open ticket to resolve within 30 days |
+| Low | Informational |
+
+---
+
+## CI Pipeline Structure
+
+Quality gates run in this order. Each step must pass before the next one starts.
+
+```
+Push / Pull Request
+        │
+        ▼
+┌───────────────────┐
+│  1. Install deps  │  npm ci
+└─────────┬─────────┘
+          │
+          ▼
+┌───────────────────┐
+│  2. Type check    │  tsc --noEmit            ← blocks on error
+└─────────┬─────────┘
+          │
+          ▼
+┌───────────────────┐
+│  3. Lint          │  eslint src/             ← blocks on error
+└─────────┬─────────┘
+          │
+          ▼
+┌───────────────────┐
+│  4. Tests +       │  vitest run --coverage   ← blocks if threshold not met
+│     Coverage      │
+└─────────┬─────────┘
+          │
+          ▼
+┌───────────────────┐
+│  5. Dependency    │  npm audit --audit-level=high  ← blocks on critical/high CVE
+│     audit         │
+└─────────┬─────────┘
+          │
+          ▼
+┌───────────────────┐
+│  6. SonarQube     │  sonar-scanner           ← blocks on critical/high issues
+│     analysis      │
+└─────────┬─────────┘
+          │
+          ▼
+        Deploy
+```
+
+### GitHub Actions example
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npx eslint src/ --max-warnings=0
+
+      - name: Tests and coverage
+        run: npx vitest run --coverage
+
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
+      - name: SonarQube analysis
+        uses: SonarSource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+```
+
+---
+
+## Blocking vs. Non-Blocking Rules
+
+Not all issues are equal. This table defines what stops a deployment and what is informational.
+
+| Check | Condition | Blocks deploy |
+|---|---|---|
+| Tests | Any test fails | Yes |
+| Line coverage | Below 80% | Yes |
+| Branch coverage | Below 75% | Yes |
+| TypeScript | Any type error | Yes |
+| ESLint | Any error (warnings allowed with `--max-warnings=0`) | Yes |
+| SonarQube critical | Any critical issue | Yes |
+| SonarQube high | Any new high issue in the PR diff | Yes |
+| SonarQube medium | Total count increases | Yes |
+| SonarQube security hotspot | Any unreviewed hotspot | Yes |
+| npm audit critical/high | Any critical or high CVE | Yes |
+| npm audit moderate | Unresolved after 30 days | Yes |
+| SonarQube low / info | Any | No — informational |
+
+### Handling legitimate exceptions
+
+Some issues have legitimate reasons to exist. The process for handling them:
+
+1. **SonarQube false positive:** Mark the issue as `False Positive` in the SonarQube UI with a written justification. The record is stored in SonarQube permanently.
+2. **ESLint rule exception:** Use `// eslint-disable-next-line rule-name` with a comment explaining why. Never use `// eslint-disable` (file-wide disable).
+3. **Coverage gap on generated code:** Add the path to the `exclude` list in `vitest.config.ts`. Reviewed and approved by a senior engineer.
+4. **Known CVE with no fix available:** Add to `npm audit` ignore list with an expiry date and an open ticket.
+
+```bash
+# ✅ Ignore a specific CVE with a reason (requires npm audit resolve)
+# Document in a .nsprc or audit config with expiry
+```
+
+> **Rule:** Every exception must be visible in the code or the tool. An exception that is invisible to the next engineer is not an exception — it is a hidden gap.
+
+---
+
+## Quick Reference
+
+```bash
+# Run all gates locally before pushing
+npx tsc --noEmit                          # type check
+npx eslint src/ --max-warnings=0          # lint
+npx vitest run --coverage                 # tests + coverage
+npm audit --audit-level=high              # dependency vulnerabilities
+npx sonar-scanner                         # static analysis (requires token)
+```
+
+| Gate | Tool | Threshold |
+|---|---|---|
+| Type safety | `tsc --noEmit` | 0 errors |
+| Linting | `eslint` | 0 errors |
+| Line coverage | Vitest / Jest | 80% minimum |
+| Branch coverage | Vitest / Jest | 75% minimum |
+| Critical / high CVEs | `npm audit` | 0 allowed |
+| Critical static issues | SonarQube | 0 allowed |
+| New high static issues | SonarQube | 0 per PR |
+| Security hotspots | SonarQube | All reviewed before merge |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
