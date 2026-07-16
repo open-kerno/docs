@@ -1,0 +1,208 @@
+---
+sidebar_position: 8
+title: Logging Standards
+description: Engineering guide for structured logging, log levels, and PII masking across all services.
+author: CTO
+tags: [standards, logging, observability, pii, security]
+---
+
+# Logging Standards
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> Logs are how we understand what our systems are doing. Without structure and PII discipline, they are both useless and dangerous.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: Structured JSON Logs](#the-standard-structured-json-logs)
+3. [Log Levels](#log-levels)
+4. [PII Masking](#pii-masking)
+5. [Official Tooling](#official-tooling)
+6. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+Logs are only useful if they are readable by machines and safe for humans to access. When we get this wrong, the consequences go in two directions.
+
+### Logs become noise
+
+**Unstructured logs break search and alerting.**
+When teams write free-text logs like `"Payment failed for user 42"`, the only way to find them is grep. You cannot filter by field, build dashboards, or set alerts on specific values. As call volume grows, log search becomes impractical. Incidents take longer to diagnose. Post-mortems are incomplete.
+
+### Logs become a liability
+
+**Sensitive data leaks into log storage.**
+Card numbers, passwords, tokens, and personal data frequently appear in logs when teams log raw request bodies or full objects. Log storage is often less restricted than production databases — it is shared across the engineering team, sometimes exported to third-party tools (Datadog, Splunk), and retained for months. One log line with a card number is a compliance violation.
+
+> **Architectural warning:** Logs are not a private scratchpad. Assume any log line you write will be read by a new engineer, parsed by a third-party logging platform, and retained for at least 90 days. Write accordingly.
+
+---
+
+## The Standard: Structured JSON Logs
+
+Every log line must be a valid JSON object. No free-text concatenation. No `console.log` in production services.
+
+### Required fields
+
+| Field | Type | Description |
+|---|---|---|
+| `level` | string | One of: `debug`, `info`, `warn`, `error` |
+| `event` | string | SCREAMING_SNAKE_CASE identifier for the event (e.g. `PAYMENT_INITIATED`) |
+| `timestamp` | string | ISO 8601 UTC (e.g. `2026-07-16T12:00:00.000Z`) |
+| `service` | string | Name of the service emitting the log (e.g. `payments`) |
+| `context` | object | Structured key-value pairs relevant to the event |
+
+### Format comparison
+
+| Before (unstructured) | After (structured) |
+|---|---|
+| `"Payment of 100 failed"` | `{ "event": "PAYMENT_FAILED", "context": { "amount": 100 } }` |
+| `"User 42 logged in"` | `{ "event": "USER_LOGIN", "context": { "userId": "42" } }` |
+| `console.log(err)` | `log.error('DB_QUERY_FAILED', { error: err.message })` |
+
+---
+
+## Log Levels
+
+Use the correct level. Wrong levels pollute dashboards and numb teams to real alerts.
+
+| Level | When to use | Example event |
+|---|---|---|
+| `debug` | Internal state useful during development only. Never enabled in production by default. | `CACHE_MISS`, `SQL_QUERY_PLAN` |
+| `info` | Normal business events. Things that should happen and did. | `PAYMENT_INITIATED`, `USER_SIGNUP` |
+| `warn` | Something unexpected happened but the system recovered. Requires monitoring. | `RETRY_ATTEMPTED`, `RATE_LIMIT_APPROACHED` |
+| `error` | A failure that requires attention. The operation did not complete. | `PAYMENT_FAILED`, `DB_CONNECTION_LOST` |
+
+> **Rule:** If it is not actionable, it is not `error`. Reserving `error` for real failures makes on-call alerts meaningful.
+
+---
+
+## PII Masking
+
+Any field that contains personally identifiable information must be masked before it is written to a log. Masking happens at the call site, not in a downstream aggregator.
+
+### What counts as PII
+
+| Data type | Examples |
+|---|---|
+| Payment data | Card numbers, CVV, bank account numbers |
+| Identity | Full name, email address, phone number, SSN, date of birth |
+| Credentials | Passwords, tokens, API keys, session IDs |
+| Location | Full address, GPS coordinates |
+
+### Masking rule
+
+Masked fields are replaced with `***...` (three asterisks followed by an ellipsis). The field key is preserved so you can see what was redacted. The value is never partially shown (no first-6-last-4 masking in logs).
+
+### How to mask with `@open-kerno/commons/logger`
+
+Pass the list of field keys to mask as the third argument to any log call. The logger replaces those values before writing.
+
+```typescript
+import logger from '@open-kerno/commons/logger';
+
+const log = logger('payments');
+
+// ✅ Correct — cardNumber is masked in the log output
+log.info('PAYMENT_INITIATED', { amount: 100, cardNumber: '4111111111111111' }, ['cardNumber']);
+// Output: { "level": "info", "event": "PAYMENT_INITIATED", "service": "payments",
+//           "context": { "amount": 100, "cardNumber": "***..." } }
+
+// ❌ Wrong — raw card number written to logs
+log.info('PAYMENT_INITIATED', { amount: 100, cardNumber: '4111111111111111' });
+```
+
+### Masking nested fields
+
+If the PII is inside a nested object, pass the full dot-path key.
+
+```typescript
+// ✅ Mask nested field
+log.info('CHECKOUT_COMPLETE', {
+  order: { id: 'ord_123', paymentMethod: { cardNumber: '4111111111111111' } }
+}, ['order.paymentMethod.cardNumber']);
+```
+
+### Never log raw request bodies
+
+Do not log `req.body` or any full object you did not explicitly construct. Always build a context object with only the fields you need, and mask any PII in that object.
+
+```typescript
+// ❌ Wrong — logs the full request body, including any PII
+log.info('ORDER_RECEIVED', { body: req.body });
+
+// ✅ Correct — explicit fields, PII masked
+log.info('ORDER_RECEIVED', {
+  orderId: req.body.orderId,
+  userId: req.body.userId,
+  email: req.body.email,
+}, ['email']);
+```
+
+---
+
+## Official Tooling
+
+**Approved package:** `@open-kerno/commons/logger`
+
+```bash
+# Already included in @open-kerno/commons — no separate install needed
+import logger from '@open-kerno/commons/logger';
+```
+
+Why this logger:
+- Outputs valid JSON to stdout (compatible with Datadog, CloudWatch, and any log aggregator).
+- Enforces the `event` + `context` structure at the call site.
+- Built-in PII masking via the third argument — no need for custom sanitizers.
+- Stamps `timestamp`, `level`, and `service` automatically.
+- Zero-config — the service name is the only required argument.
+
+**Do not use:**
+- `console.log` / `console.error` — unstructured, no level, no context, no masking.
+- `winston` directly — duplicates what the commons logger already provides.
+- `pino` directly — same reason.
+- String template logs (`"Error: " + err.message`) — not parseable.
+
+---
+
+## Quick Reference
+
+```typescript
+import logger from '@open-kerno/commons/logger';
+const log = logger('my-service');
+
+// ✅ Info — normal business event
+log.info('USER_SIGNUP', { userId: '42', plan: 'pro' });
+
+// ✅ Warn — recovered, but monitor it
+log.warn('PAYMENT_RETRY', { attempt: 2, orderId: 'ord_99' });
+
+// ✅ Error — operation failed
+log.error('CHARGE_FAILED', { orderId: 'ord_99', reason: err.message });
+
+// ✅ PII masked
+log.info('PAYMENT_INITIATED', { amount: 100, cardNumber: '4111111111111111' }, ['cardNumber']);
+
+// ❌ Never
+console.log('Payment initiated', req.body);
+log.info('payment initiated for ' + user.email);
+log.error('FAILED', { user });  // logs entire user object including PII
+```
+
+| Task | How |
+|---|---|
+| Log a business event | `log.info('EVENT_NAME', { ...context })` |
+| Log a recoverable issue | `log.warn('EVENT_NAME', { ...context })` |
+| Log a failure | `log.error('EVENT_NAME', { error: err.message, ...context })` |
+| Mask a sensitive field | Add the field key as third argument: `['fieldName']` |
+| Mask a nested field | Use dot-path: `['user.cardNumber']` |
+| Debug locally | `log.debug('EVENT', { ...context })` — disabled in production |
+| Log raw request body | **Never** — extract only the fields you need |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
