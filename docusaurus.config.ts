@@ -156,6 +156,7 @@ const config: Config = {
         indexPages: false,
         searchBarShortcutHint: true,
         searchResultLimits: 8,
+        docsRouteBasePath: '/',
       } satisfies SearchLocalOptions,
     ],
   ],
