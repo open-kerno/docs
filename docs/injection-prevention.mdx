@@ -1,0 +1,445 @@
+---
+sidebar_position: 15
+title: Injection Vulnerabilities Prevention
+description: Engineering guide for preventing SQL, NoSQL, and command injection through parameterized queries, ORM sanitization, and strict input validation.
+author: CTO
+tags: [standards, security, sql-injection, nosql, command-injection, input-validation]
+---
+
+# Injection Vulnerabilities Prevention
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> Injection is the most exploited vulnerability class on the internet. Every year, companies lose user data, access credentials, and production databases because one engineer concatenated user input into a query. This guide defines the rules that prevent it.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard at a Glance](#the-standard-at-a-glance)
+3. [SQL Injection](#sql-injection)
+4. [NoSQL Injection](#nosql-injection)
+5. [Command Injection](#command-injection)
+6. [Input Validation](#input-validation)
+7. [Auditing Your Codebase](#auditing-your-codebase)
+8. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+Injection attacks happen when untrusted data is sent to an interpreter — a database engine, a shell, a query parser — as part of a command. The interpreter cannot tell the difference between the command and the data. It executes both.
+
+### The consequence is total
+
+**SQL injection gives an attacker full database access.**
+A single vulnerable query can return every row in every table, delete the entire database, or — on misconfigured servers — execute operating system commands. The attacker does not need a password. They need one endpoint that concatenates user input into a SQL string.
+
+**It is still the number one exploited vulnerability.**
+OWASP has ranked injection first or second on its Top 10 list every year since 2010. It is not a theoretical risk. It is the most common root cause of database breaches in production systems, including at companies with large security teams.
+
+### The fix is simple and non-negotiable
+
+**Parameterized queries eliminate the vulnerability entirely.**
+When user input is passed as a parameter — not concatenated into the query string — the database engine treats it as data, never as executable code. There is no partial fix, no sanitization function that reliably replaces this. Parameterized queries are the only correct solution.
+
+> **Architectural warning:** Never write a sanitization function to "clean" user input before concatenating it into a query. Sanitization is incomplete by definition — new bypass techniques are discovered regularly. Parameterization is complete by definition — the input cannot reach the interpreter as code.
+
+---
+
+## The Standard at a Glance
+
+| Attack type | Forbidden pattern | Required pattern |
+|---|---|---|
+| SQL injection | String concatenation into SQL | Parameterized queries or ORM |
+| NoSQL injection | Unsanitized object passed to query | Validated schema before query |
+| Command injection | User input in `exec` / `spawn` / `eval` | Avoid shell entirely; use library APIs |
+| All types | Raw user input at any query boundary | Validate with schema (Zod) at every entry point |
+
+---
+
+## SQL Injection
+
+SQL injection happens when user input is concatenated directly into a SQL string. The database engine parses the result as SQL and executes the attacker's code.
+
+### The attack
+
+```typescript
+// ❌ Vulnerable — attacker controls the query
+const query = `SELECT * FROM users WHERE email = '${req.body.email}'`;
+// Input: ' OR '1'='1
+// Result: SELECT * FROM users WHERE email = '' OR '1'='1'
+// Returns every row in the table
+```
+
+A more destructive input:
+
+```
+email = "'; DROP TABLE users; --"
+// Result: SELECT * FROM users WHERE email = ''; DROP TABLE users; --'
+// Deletes the entire users table
+```
+
+### The fix: parameterized queries
+
+Pass user input as a separate parameter. The database engine never parses it as SQL.
+
+```typescript
+// ✅ Parameterized query — node-postgres (pg)
+const result = await db.query(
+  'SELECT * FROM users WHERE email = $1',
+  [req.body.email]
+);
+
+// ✅ Multiple parameters
+const result = await db.query(
+  'INSERT INTO orders (user_id, amount, currency) VALUES ($1, $2, $3)',
+  [userId, amount, currency]
+);
+```
+
+The user input `' OR '1'='1` is passed as the literal string value of `$1`. It is never interpreted as SQL.
+
+### ORM: Prisma
+
+Prisma parameterizes all queries by default. Use the standard Prisma API and you are protected.
+
+```typescript
+// ✅ Safe — Prisma parameterizes automatically
+const user = await prisma.user.findFirst({
+  where: { email: req.body.email },
+});
+
+// ✅ Safe — filtered and paginated
+const orders = await prisma.order.findMany({
+  where: { userId, status: 'paid' },
+  orderBy: { createdAt: 'desc' },
+  take: 20,
+});
+```
+
+**Raw queries in Prisma:** when you need a raw query, use `prisma.$queryRaw` with the tagged template literal, never string concatenation.
+
+```typescript
+// ✅ Safe — tagged template literal parameterizes automatically
+const users = await prisma.$queryRaw`
+  SELECT * FROM users WHERE email = ${req.body.email}
+`;
+
+// ❌ Vulnerable — string interpolation bypasses parameterization
+const users = await prisma.$queryRawUnsafe(
+  `SELECT * FROM users WHERE email = '${req.body.email}'`
+);
+```
+
+`$queryRawUnsafe` exists for cases where the query structure itself is dynamic (e.g. column names chosen at runtime). If you use it, the query structure must come from your own code — never from user input.
+
+### Dynamic ORDER BY and column names
+
+Column names and sort directions cannot be parameterized. If they come from user input, use an allowlist.
+
+```typescript
+// ✅ Allowlist for dynamic column names
+const ALLOWED_SORT_COLUMNS = ['created_at', 'amount', 'status'] as const;
+type SortColumn = typeof ALLOWED_SORT_COLUMNS[number];
+
+function getSortColumn(input: string): SortColumn {
+  if (!ALLOWED_SORT_COLUMNS.includes(input as SortColumn)) {
+    throw new ValidationError([{ field: 'sortBy', message: 'Invalid sort column.' }]);
+  }
+  return input as SortColumn;
+}
+
+const sortColumn = getSortColumn(req.query.sortBy);
+// Safe to interpolate — value is guaranteed to be from the allowlist
+const result = await db.query(
+  `SELECT * FROM orders ORDER BY ${sortColumn} DESC LIMIT $1`,
+  [limit]
+);
+```
+
+---
+
+## NoSQL Injection
+
+NoSQL databases (MongoDB, DynamoDB, Redis) are not immune to injection. They use different query languages, but the same principle applies: untrusted data must never control the structure of a query.
+
+### The MongoDB attack
+
+MongoDB queries use JavaScript objects. If user input is merged directly into a query object, an attacker can replace a string value with a query operator.
+
+```typescript
+// ❌ Vulnerable — attacker controls the query operator
+const user = await db.collection('users').findOne({
+  email: req.body.email,    // expected: "user@example.com"
+  password: req.body.password, // attacker sends: { "$gt": "" }
+});
+// { "$gt": "" } matches any non-empty password — authentication bypassed
+```
+
+### The fix: schema validation before the query
+
+Validate the shape and type of every input before it reaches the database. If the input is supposed to be a string, reject anything that is not a string.
+
+```typescript
+// ✅ Validate with Zod before the query
+import { z } from 'zod';
+
+const LoginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8).max(128),
+});
+
+const { email, password } = LoginSchema.parse(req.body);
+// parse() throws a ZodError if the input is not a plain string
+// An object like { "$gt": "" } fails the z.string() check
+
+const user = await db.collection('users').findOne({ email, password });
+```
+
+Zod's `z.string()` rejects any value that is not a primitive string. An attacker sending `{ "$gt": "" }` receives a validation error before the query runs.
+
+### Mongoose (ODM)
+
+Mongoose schemas define the expected type of each field. Fields with a defined type are cast before the query — an object passed to a `String` field becomes `"[object Object]"` rather than a query operator.
+
+```typescript
+// ✅ Mongoose schema enforces types
+const UserSchema = new mongoose.Schema({
+  email:    { type: String, required: true },
+  password: { type: String, required: true },
+});
+
+// Still: validate with Zod before Mongoose — do not rely on casting alone
+```
+
+Do not rely on Mongoose type casting as your only protection. Validate with Zod first, then pass the validated values to Mongoose.
+
+---
+
+## Command Injection
+
+Command injection happens when user input is passed to a shell command. The shell interprets special characters (`;`, `|`, `&&`, backticks) as command separators and executes the attacker's commands.
+
+### The attack
+
+```typescript
+// ❌ Vulnerable — user input reaches the shell
+import { exec } from 'child_process';
+
+exec(`convert input/${req.body.filename} output/result.png`, callback);
+// Input: "photo.jpg; rm -rf /"
+// Executes: convert input/photo.jpg; rm -rf /
+```
+
+### The fix: avoid the shell entirely
+
+Most operations that teams implement with shell commands have a library equivalent that does not involve a shell.
+
+```typescript
+// ❌ Shell command for file operations
+exec(`cp ${userFile} ${destDir}`);
+
+// ✅ Node.js fs API — no shell, no injection surface
+import { copyFile } from 'fs/promises';
+await copyFile(userFile, destPath);
+```
+
+```typescript
+// ❌ Shell command for image processing
+exec(`convert ${req.body.filename} output.png`);
+
+// ✅ Library API — no shell
+import sharp from 'sharp';
+await sharp(inputPath).png().toFile(outputPath);
+// inputPath is constructed from validated, allowlisted values — never from raw user input
+```
+
+### When you must use a subprocess
+
+If a shell command is unavoidable, use `spawn` with an argument array — never `exec` with a string. `spawn` does not invoke a shell; it passes arguments directly to the process.
+
+```typescript
+import { spawn } from 'child_process';
+
+// ❌ exec — invokes a shell, user input can escape
+exec(`ffmpeg -i ${req.body.inputFile} output.mp4`);
+
+// ✅ spawn — no shell, arguments are separate values
+const process = spawn('ffmpeg', ['-i', validatedInputPath, 'output.mp4']);
+// validatedInputPath comes from an allowlist or a UUID-based filename — never raw user input
+```
+
+### Filename and path rules
+
+Never use raw user input as a file path or filename. Construct paths from your own values and validate any user-provided component against an allowlist or a strict format.
+
+```typescript
+// ❌ Wrong — user controls the path
+const filePath = `uploads/${req.body.filename}`;
+
+// ✅ Correct — filename is a UUID generated by the server
+import { v7 as uuidv7 } from 'uuid';
+import path from 'path';
+
+const safeFilename = `${uuidv7()}.${validatedExtension}`;
+const filePath = path.join(UPLOAD_DIR, safeFilename);
+// path.join normalizes traversal sequences like ../../
+```
+
+Validate file extensions against an allowlist:
+
+```typescript
+const ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp'] as const;
+
+const ext = req.file.originalname.split('.').pop()?.toLowerCase();
+if (!ext || !ALLOWED_EXTENSIONS.includes(ext as any)) {
+  throw new ValidationError([{ field: 'file', message: 'File type not allowed.' }]);
+}
+```
+
+---
+
+## Input Validation
+
+Validation is the first line of defense at every trust boundary. Every value that enters the system from outside — request body, query string, URL parameter, file upload, webhook payload — must be validated before it is used.
+
+### Required tool: Zod
+
+Use Zod for all input validation. Define a schema for every request shape and parse at the controller layer before passing data to services or queries.
+
+```typescript
+import { z } from 'zod';
+
+const CreateOrderSchema = z.object({
+  userId:   z.string().uuid(),
+  amount:   z.number().int().positive(),
+  currency: z.string().length(3).regex(/^[A-Z]{3}$/),
+  items:    z.array(z.object({
+    productId: z.string().uuid(),
+    quantity:  z.number().int().min(1).max(100),
+  })).min(1).max(50),
+});
+
+// In the route handler — parse before anything else
+const body = CreateOrderSchema.parse(req.body);
+// From here, body.userId is a valid UUID string, body.amount is a positive integer
+// Passing body to a Prisma query or parameterized SQL is safe
+```
+
+`parse()` throws a `ZodError` if validation fails. The central error handler catches it and returns a `VALIDATION_ERROR` response. See [Error Handling Standards](./error-handling-standards.mdx).
+
+### Validation rules
+
+| Input source | Rule |
+|---|---|
+| Request body | Always parse with a Zod schema before use |
+| Query string parameters | Validate type and format — query params are always strings by default |
+| URL path parameters (`:id`) | Validate as UUID with `z.string().uuid()` |
+| File uploads | Validate MIME type and extension against an allowlist |
+| Webhook payloads | Validate signature first, then schema |
+| Environment variables | Validate at startup — fail fast if required vars are missing |
+
+### Never trust — even from internal services
+
+Internal services can be compromised. Validate inputs from internal callers using the same Zod schemas you use for external clients. Do not skip validation because the source appears to be trusted.
+
+```typescript
+// ❌ Wrong — assumes internal caller sends valid data
+async function processPayment(payload: any) {
+  await db.query(
+    'INSERT INTO payments (user_id, amount) VALUES ($1, $2)',
+    [payload.userId, payload.amount]
+  );
+}
+
+// ✅ Correct — validates before use, even from internal callers
+const PaymentSchema = z.object({
+  userId: z.string().uuid(),
+  amount: z.number().int().positive(),
+});
+
+async function processPayment(rawPayload: unknown) {
+  const payload = PaymentSchema.parse(rawPayload);
+  await db.query(
+    'INSERT INTO payments (user_id, amount) VALUES ($1, $2)',
+    [payload.userId, payload.amount]
+  );
+}
+```
+
+---
+
+## Auditing Your Codebase
+
+Run these commands to find injection vulnerabilities in existing code before they reach production. Add them to your CI pipeline.
+
+```bash
+# Find string concatenation into SQL queries
+grep -rn "query\s*[`'\"].*\${" src/ --include="*.ts"
+grep -rn "query\s*.*+.*req\." src/ --include="*.ts"
+
+# Find $queryRawUnsafe usage in Prisma
+grep -rn "\$queryRawUnsafe" src/ --include="*.ts"
+
+# Find exec() with template literals or concatenation (command injection risk)
+grep -rn "exec\s*(\`\|exec\s*(.* +" src/ --include="*.ts"
+
+# Find eval() usage
+grep -rn "\beval\s*(" src/ --include="*.ts" --include="*.js"
+
+# Find direct use of req.body / req.query without a Zod parse call nearby
+grep -rn "req\.body\." src/ --include="*.ts" | grep -v "Schema\.parse\|Schema\.safeParse"
+```
+
+These commands surface candidates for review — not every match is a vulnerability, but every match should be inspected. Add the checks to your SonarQube configuration to catch regressions automatically.
+
+---
+
+## Quick Reference
+
+```typescript
+// ✅ SQL — parameterized
+db.query('SELECT * FROM users WHERE email = $1', [email]);
+
+// ✅ Prisma — standard API
+prisma.user.findFirst({ where: { email } });
+
+// ✅ Prisma — raw query with tagged template
+prisma.$queryRaw`SELECT * FROM users WHERE email = ${email}`;
+
+// ✅ Dynamic column — allowlist only
+const COLS = ['created_at', 'amount'] as const;
+if (!COLS.includes(col)) throw new ValidationError(...);
+
+// ✅ NoSQL — validate type before query
+const { email } = z.object({ email: z.string().email() }).parse(req.body);
+db.collection('users').findOne({ email });
+
+// ✅ Subprocess — spawn, no shell
+spawn('ffmpeg', ['-i', validatedPath, 'out.mp4']);
+
+// ✅ Input — Zod schema at every entry point
+const body = MySchema.parse(req.body);
+
+// ❌ Never
+`SELECT * FROM users WHERE email = '${req.body.email}'`
+exec(`convert ${req.body.filename} out.png`)
+prisma.$queryRawUnsafe(`... ${userInput}`)
+db.collection('users').findOne({ password: req.body.password }) // no validation
+```
+
+| Task | How |
+|---|---|
+| Query with user input (SQL) | Parameterized query (`$1`, `$2`) or Prisma standard API |
+| Raw SQL in Prisma | `$queryRaw` tagged template — never `$queryRawUnsafe` with user input |
+| Dynamic `ORDER BY` column | Validate against an explicit allowlist before interpolating |
+| Query with user input (MongoDB) | Validate with Zod first — reject non-string types |
+| Run an external process | `spawn` with argument array — never `exec` with a string |
+| Use a filename from user input | Generate a server-side UUID filename — validate extension against allowlist |
+| Validate request input | `ZodSchema.parse(req.body)` at the controller layer |
+| Handle a `ZodError` | Let it propagate to the central error handler — returns `VALIDATION_ERROR` |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
