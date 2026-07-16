@@ -1,0 +1,282 @@
+---
+sidebar_position: 25
+title: GTIN / Barcode Standards
+description: Engineering guide for storing, validating, and normalizing Global Trade Item Numbers (GTINs) and EAN-13 barcodes across all catalog and inventory systems.
+author: CTO
+tags: [standards, gtin, ean13, barcode, catalog, inventory, gs1]
+---
+
+# GTIN / Barcode Standards
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> This is not a suggestion. Every system that stores, syncs, or processes product identifiers must follow this guide.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: GS1 GTIN-14](#the-standard-gs1-gtin-14)
+3. [Validation: The GS1 Check Digit](#validation-the-gs1-check-digit)
+4. [Official Tooling](#official-tooling)
+5. [Database Best Practices](#database-best-practices)
+6. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+A barcode looks like a simple number. In retail and supply chain systems, it is the universal key that links a physical product to every system that needs to know it exists.
+
+When GTINs are stored inconsistently — wrong length, missing leading zeros, no check digit validation — catalog sync fails, inventory drifts, and retailer integrations reject our data.
+
+### What Goes Wrong Without a Standard
+
+**Retailer and marketplace integrations reject products.**
+Amazon, Google Shopping, and major grocery retailers require a valid GTIN-13 or GTIN-14 to list a product. An 11-digit UPC submitted without padding, or a GTIN with an invalid check digit, is rejected at the API boundary. The product does not appear in the catalog.
+
+**Duplicate products are created.**
+The same product stored as `0012345678905` (GTIN-13) in one service and `12345678905` (11 digits, missing leading zeros) in another will not match on a join. Two records are created for one product. Inventory splits. Orders route to the wrong SKU.
+
+**Barcode scanners produce inconsistent input.**
+Handheld scanners may return 8, 12, 13, or 14 digits depending on the symbology they are configured to read. Without a normalization step, the same physical product produces a different string on every scan. Lookups fail intermittently and the bug cannot be reproduced in a lab.
+
+**Check digit errors cause silent misidentification.**
+A single transcription error in a GTIN produces a different product identifier. Without check digit validation, two different GTINs that differ by one digit are both accepted and stored. They can resolve to different products. Orders are fulfilled with the wrong item.
+
+> **Architectural warning:** GTINs are global identifiers assigned and maintained by GS1. They are not internal IDs. Validating them before storing is the only way to catch transcription errors, scanning misconfigurations, and corrupted catalog imports before they reach inventory and fulfillment.
+
+---
+
+## The Standard: GS1 GTIN-14
+
+We store all product identifiers using the **GS1 GTIN-14** format. GTIN-14 is the canonical superset of all GS1 barcode formats. It is always exactly 14 digits, zero-padded from the left.
+
+### The GTIN Family
+
+GS1 defines four GTIN lengths. All are normalized to 14 digits for storage.
+
+| Format | Digits | Common use | Raw example | Stored as |
+|---|---|---|---|---|
+| GTIN-8 (EAN-8) | 8 | Small packaging | `12345670` | `00000012345670` |
+| GTIN-12 (UPC-A) | 12 | North American retail | `012345678905` | `00012345678905` |
+| GTIN-13 (EAN-13) | 13 | International retail | `0614141000418` | `00614141000418` |
+| GTIN-14 | 14 | Cases, pallets, logistics | `00614141000418` | `00614141000418` |
+
+> **Rule:** The `gtin` field always stores a 14-digit, zero-padded string. The last digit is always the GS1 check digit, validated before storage. The field named `barcode` is an alias for `gtin` — both follow this rule.
+
+### Normalization Rules
+
+| Raw Input | Normalized GTIN-14 |
+|---|---|
+| `0614141000418` | `00614141000418` |
+| `614141000418` | `00614141000418` |
+| `0 61414 10004 1 8` | `00614141000418` — strip spaces |
+| `00614141000418` | `00614141000418` — already normalized |
+| `0614141000419` | ❌ Invalid — check digit mismatch |
+| `061414100041` | ❌ Invalid — 12 digits that fail the check digit |
+| `ABC1234567890` | ❌ Invalid — non-digit characters |
+| `123` | ❌ Invalid — length not in {8, 12, 13, 14} |
+
+> **Rule:** Strip all spaces and hyphens. Reject any non-digit character. Accept raw lengths of 8, 12, 13, or 14 digits only. Zero-pad to 14 digits. Validate the check digit. Store the 14-digit result.
+
+---
+
+## Validation: The GS1 Check Digit
+
+Every valid GTIN ends with a **GS1 check digit**. Validating it before storage is mandatory.
+
+### The Algorithm
+
+The check digit is computed from all preceding digits using alternating weights of 3 and 1, applied right to left starting from the digit immediately left of the check digit.
+
+```
+GTIN-13 example: 0 6 1 4 1 4 1 0 0 0 4 1 [8]
+                 ↑ these 12 digits are used to compute the check digit
+
+Weights (right to left, starting with 3):
+  1×3  4×1  0×3  0×1  0×3  1×1  4×3  1×1  4×3  1×1  6×3  0×1
+=  3  + 4  + 0  + 0  + 0  + 1  +12  + 1  +12  + 1  +18  + 0
+= 52
+
+Check digit = (10 - (52 % 10)) % 10 = (10 - 2) % 10 = 8 ✓
+```
+
+The `% 10` on the outside handles the case where `sum % 10 == 0`, which gives a check digit of `0` rather than `10`.
+
+---
+
+## Official Tooling
+
+The GS1 check digit algorithm is short enough to implement inline. No external package is needed for validation. Add a dependency only if you need barcode generation or GS1 data structure parsing.
+
+---
+
+### TypeScript / JavaScript
+
+**Validation — implement directly:**
+
+```ts
+function normalizeGtin(raw: string): string {
+  const digits = raw.replace(/[\s-]/g, '');
+  if (!/^\d+$/.test(digits)) {
+    throw new Error(`Invalid GTIN: non-digit characters in "${raw}"`);
+  }
+  if (![8, 12, 13, 14].includes(digits.length)) {
+    throw new Error(`Invalid GTIN length ${digits.length} for "${raw}"`);
+  }
+  const padded = digits.padStart(14, '0');
+  if (!isValidGtinCheckDigit(padded)) {
+    throw new Error(`Invalid GTIN check digit for "${raw}"`);
+  }
+  return padded;
+}
+
+function isValidGtinCheckDigit(gtin14: string): boolean {
+  let sum = 0;
+  for (let i = 0; i < 13; i++) {
+    const weight = (13 - i) % 2 === 0 ? 3 : 1; // rightmost of first 13 gets weight 3
+    sum += parseInt(gtin14[i], 10) * weight;
+  }
+  const check = (10 - (sum % 10)) % 10;
+  return check === parseInt(gtin14[13], 10);
+}
+```
+
+**Barcode generation** (rendering barcodes as images): use [`bwip-js`](https://www.npmjs.com/package/bwip-js).
+
+```bash
+npm install bwip-js
+```
+
+Do not write a custom check digit implementation with a different weight order — the GS1 spec is specific and off-by-one errors produce validators that accept bad GTINs. Use the implementation above verbatim.
+
+---
+
+### Go
+
+**Validation — implement directly:**
+
+```go
+func NormalizeGTIN(raw string) (string, error) {
+    // Strip spaces and hyphens
+    var digits strings.Builder
+    for _, c := range raw {
+        if c >= '0' && c <= '9' {
+            digits.WriteRune(c)
+        } else if c != ' ' && c != '-' {
+            return "", fmt.Errorf("invalid GTIN: non-digit character in %q", raw)
+        }
+    }
+    d := digits.String()
+    switch len(d) {
+    case 8, 12, 13, 14:
+    default:
+        return "", fmt.Errorf("invalid GTIN length %d in %q", len(d), raw)
+    }
+    padded := fmt.Sprintf("%014s", d)
+    if !isValidGTINCheckDigit(padded) {
+        return "", fmt.Errorf("invalid GTIN check digit in %q", raw)
+    }
+    return padded, nil
+}
+
+func isValidGTINCheckDigit(gtin14 string) bool {
+    sum := 0
+    for i := 0; i < 13; i++ {
+        d := int(gtin14[i] - '0')
+        if (13-i)%2 == 0 {
+            d *= 3
+        }
+        sum += d
+    }
+    check := (10 - sum%10) % 10
+    return check == int(gtin14[13]-'0')
+}
+```
+
+Do not use a third-party GTIN library unless you need GS1 Application Identifier parsing (e.g., parsing GS1-128 barcodes with embedded lot numbers and expiry dates). For basic EAN-13 / GTIN-14 validation, the implementation above is sufficient and has no external dependencies.
+
+---
+
+## Database Best Practices
+
+### Column Type
+
+Store `gtin` values as `CHAR(14)`. The value is always exactly 14 digits after normalization.
+
+| Decision | Recommendation |
+|---|---|
+| **Type** | `CHAR(14)` |
+| **Content** | Digits only — plain ASCII `0–9` |
+| **Nullable** | Only if a product genuinely has no barcode (rare in retail) |
+| **Default** | No default — `NULL` is better than a zeroed placeholder |
+| **Constraint** | Add a `CHECK` to enforce digit-only content |
+
+```sql
+-- PostgreSQL: enforce digit-only content and exact length
+ALTER TABLE products
+  ADD COLUMN gtin CHAR(14) CHECK (gtin ~ '^\d{14}$');
+```
+
+> **Rule:** Do not store raw scanner output directly. Always normalize through `normalizeGtin()` before the INSERT or UPDATE. A `CHECK` constraint catches bugs in the normalization layer but is not a substitute for application-level validation.
+
+### Indexes
+
+`gtin` is almost always a lookup key. Index it.
+
+```sql
+-- Unique: one GTIN per product (most common case)
+CREATE UNIQUE INDEX idx_products_gtin ON products (gtin);
+
+-- Non-unique: multiple products share a GTIN (e.g., multi-country catalog)
+CREATE INDEX idx_products_gtin ON products (gtin);
+```
+
+Because GTIN-14 is a fixed-length normalized string, **equality lookups (`WHERE gtin = '00614141000418'`) are fast and fully index-friendly.** This is the main reason we normalize before storing — mixed lengths and missing leading zeros make equality indexes unreliable.
+
+### Storing the Display Format Separately
+
+Some UIs need to show the original barcode format (e.g., 13-digit EAN-13 without the leading zero). Store the display format in a separate column — do not denormalize the `gtin` field.
+
+```sql
+ALTER TABLE products
+  ADD COLUMN gtin          CHAR(14) NOT NULL,  -- canonical GTIN-14, always 14 digits
+  ADD COLUMN barcode_raw   VARCHAR(20),         -- original scanner input, for display only
+  ADD COLUMN barcode_type  VARCHAR(10);         -- 'EAN-13', 'UPC-A', 'EAN-8', 'GTIN-14'
+```
+
+> Do not use `barcode_raw` for lookups. Always query by `gtin`.
+
+---
+
+## Quick Reference
+
+```
+✅  Store as: 00614141000418  (14 digits, zero-padded, check digit valid)
+❌  Never store: 614141000418  (missing leading zeros)
+❌  Never store: 0614141000418  (13 digits — not padded to 14)
+❌  Never store: 0614141000419  (invalid check digit)
+❌  Never store: 0 61414 10004 1 8  (spaces — not stripped)
+```
+
+| Task | How |
+|---|---|
+| Accept scanner input | Strip spaces/hyphens, check length ∈ {8,12,13,14}, validate check digit |
+| Normalize for storage | Zero-pad to 14 digits |
+| Validate check digit | GS1 alternating weights 3/1, right to left |
+| Store in DB | `CHAR(14)`, enforce digits-only with `CHECK` constraint, index the column |
+| Lookup by barcode | Always query by the 14-digit normalized `gtin` column |
+| Display to user | Format as needed (e.g., strip leading zero for EAN-13 display) — use `barcode_type` to decide |
+| Generate barcode image | [`bwip-js`](https://www.npmjs.com/package/bwip-js) (Node.js) |
+
+| GTIN length | Format | Pad to 14 with |
+|---|---|---|
+| 8 digits | EAN-8 | 6 leading zeros |
+| 12 digits | UPC-A | 2 leading zeros |
+| 13 digits | EAN-13 | 1 leading zero |
+| 14 digits | GTIN-14 | No padding needed |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
