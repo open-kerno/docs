@@ -41,3 +41,40 @@ A good first stop is the [Phone Number Standards](./phone-number-standards/) gui
 All documentation lives in this repository. To suggest a change or add a new page, open a pull request against the `main` branch.
 
 Keep documentation simple and direct. Write for a B1 English level so it is easy to read for everyone on the team, regardless of their native language.
+
+---
+
+## File reference
+
+Use this table to quickly find any standard document in the `docs/` folder.
+
+| File Path | Description |
+|---|---|
+| `docs/intro.mdx` | This page. Overview of the project and how to navigate the docs. |
+| `docs/phone-number-standards.mdx` | Rules for storing phone numbers using the international E.164 format. |
+| `docs/encryption-standards.mdx` | Allowed and disallowed encryption algorithms for data at rest and in transit. |
+| `docs/cors-standards.mdx` | Rules for Cross-Origin Resource Sharing, including how to whitelist trusted origins. |
+| `docs/datetime-standards.mdx` | Rules for storing and communicating dates and times using UTC and ISO 8601. |
+| `docs/api-design-and-versioning.mdx` | Guidelines for URL structure, pagination, and mandatory API versioning. |
+| `docs/secrets-management.mdx` | Rules for managing credentials and secrets using vault managers. |
+| `docs/logging-standards.mdx` | Standards for structured log format, log levels, and masking personal data. |
+| `docs/authentication-and-authorization.mdx` | Protocols for sessions and third-party integrations such as JWT, OAuth 2.0, and SAML. |
+| `docs/error-handling-standards.mdx` | Unified JSON error response format and rules for hiding internal server details. |
+| `docs/identifier-strategy.mdx` | Guidelines for choosing between UUIDs and auto-incrementing integer IDs. |
+| `docs/data-deletion-standards.mdx` | Rules for when to physically delete data (hard delete) or only mark it inactive (soft delete). |
+| `docs/quality-gates.mdx` | Minimum test coverage and static analysis requirements before any production deployment. |
+| `docs/currency-and-money-standards.mdx` | Rules for storing monetary values as integers in the smallest currency unit to avoid precision errors. |
+| `docs/injection-prevention.mdx` | Standards for preventing SQL, NoSQL, and command injection using parameterized queries and input validation. |
+| `docs/rbac-and-permissions.mdx` | Rules for implementing Role-Based Access Control and the Principle of Least Privilege. |
+| `docs/secure-token-storage.mdx` | Rules for storing authentication tokens in secure cookies instead of browser storage. |
+| `docs/rate-limiting-standards.mdx` | Standards for rate limiting and retry restrictions on sensitive endpoints like login and payments. |
+| `docs/dependency-versioning.mdx` | Rules for pinning third-party dependencies to fixed versions using lockfiles. |
+| `docs/country-and-subdivision-standards.mdx` | Mandatory use of ISO 3166-1 alpha-2 for country codes and ISO 3166-2 for regional subdivisions. |
+| `docs/location-and-port-identification.mdx` | Standards for identifying cities and ports using the UN/LOCODE format in logistics data. |
+| `docs/cctld-standards.mdx` | Rules for using official country-code top-level domains for localized routing. |
+| `docs/mime-type-standards.mdx` | Requirements for defining and validating file formats using standard MIME types. |
+| `docs/card-pan-standards.mdx` | Structural rules for credit and debit card Primary Account Numbers before processing or masking. |
+| `docs/gtin-barcode-standards.mdx` | Standards for product barcodes using the 13-digit EAN-13 / GTIN international format. |
+| `docs/language-code-standards.mdx` | Mandatory two-letter lowercase ISO 639-1 format for identifying application languages. |
+| `docs/locale-standards.mdx` | Rules for identifying regional formatting defaults using the BCP 47 hyphenated format. |
+| `docs/cldr-locale-standards.mdx` | Standards for Unicode CLDR locale format used in internal localization libraries. |
