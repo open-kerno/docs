@@ -1,0 +1,375 @@
+---
+sidebar_position: 16
+title: RBAC and Permissions
+description: Engineering guide for implementing Role-Based Access Control and the Principle of Least Privilege across all services and APIs.
+author: CTO
+tags: [standards, security, rbac, authorization, permissions, access-control]
+---
+
+# RBAC and Permissions
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> Authentication tells us who the user is. Authorization tells us what they are allowed to do. This guide covers authorization — and it is not optional. Every resource, every API endpoint, and every admin function must enforce explicit, server-side permission checks on every request.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: Role-Based Access Control](#the-standard-role-based-access-control)
+3. [Defining Roles and Permissions](#defining-roles-and-permissions)
+4. [Server-Side Enforcement](#server-side-enforcement)
+5. [Resource Ownership Checks](#resource-ownership-checks)
+6. [Admin and Sensitive Endpoints](#admin-and-sensitive-endpoints)
+7. [Forbidden Patterns](#forbidden-patterns)
+8. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+### Missing one check exposes everything
+
+**Authorization is not a single gate — it is a check on every door.**
+A common mistake is adding a role check to the route layer and assuming the resource is protected. If the same business logic is reachable through a background job, an internal API call, a webhook, or a different route, those paths bypass the check entirely. One missing permission check is a horizontal privilege escalation vulnerability. Attackers do not use your frontend — they call the API directly.
+
+### Client-side authorization is not authorization
+
+**Hiding a button is not a permission check.**
+If the backend does not enforce the restriction, a user with any HTTP client — `curl`, Postman, a browser dev tools console — can call the endpoint directly. Frontend visibility controls are a user experience feature, not a security control. Every permission must be enforced server-side, on every request, regardless of what the client shows or does not show.
+
+### Over-privileged accounts amplify breaches
+
+**Least privilege limits blast radius.**
+When a compromised account has `admin` access, an attacker can read all data, delete records, and create new accounts. When the same account has only `read:orders`, the attacker's reach is limited to order data. The Principle of Least Privilege means every user, service account, and API key gets exactly the permissions it needs — nothing more. A breach of a least-privilege account is contained. A breach of an over-privileged account is a disaster.
+
+### Roles drift without a clear model
+
+**Informal role management leads to permission creep.**
+Without explicit role definitions, teams grant extra permissions "just to unblock someone" and never remove them. Over time, most users end up with elevated access. Roles must be defined explicitly, assigned deliberately, and audited regularly.
+
+> **Architectural warning:** Never treat authorization as a UI concern. If the database row exists and the API is reachable, any authenticated user can attempt to access it. Server-side enforcement is the only enforcement that counts.
+
+---
+
+## The Standard: Role-Based Access Control
+
+We use **Role-Based Access Control (RBAC)**. Each user is assigned one or more roles. Each role maps to a set of explicit permissions. Permissions are checked at the service layer on every operation.
+
+### Core model
+
+```
+User → assigned Role(s) → Role contains Permission(s) → Permission guards Resource Operation
+```
+
+### Permission naming convention
+
+Permissions follow the format `action:resource`. This makes the model readable and auditable.
+
+| Format | Example |
+|---|---|
+| `read:resource` | `read:orders` |
+| `write:resource` | `write:reports` |
+| `delete:resource` | `delete:users` |
+| `manage:resource` | `manage:billing` |
+| `read:*` | All read permissions |
+| `write:*` | All write permissions |
+
+Use specific permissions over wildcards. Only `admin` roles should ever hold wildcard permissions, and even then, define which wildcards explicitly.
+
+### Permission schema
+
+```typescript
+type Permission =
+  | 'read:orders'
+  | 'write:orders'
+  | 'delete:orders'
+  | 'read:reports'
+  | 'write:reports'
+  | 'read:users'
+  | 'write:users'
+  | 'delete:users'
+  | 'manage:billing'
+  | 'manage:settings'
+  | 'manage:roles';
+
+type Role = 'viewer' | 'editor' | 'manager' | 'admin' | 'service';
+```
+
+Permissions are a closed list defined in code. Adding a new permission requires a code change and a review. This is intentional — it prevents informal permission creation.
+
+---
+
+## Defining Roles and Permissions
+
+Define the full role-to-permission mapping in one place. Every service reads from this single source.
+
+### Role definitions
+
+| Role | Permissions | Intended for |
+|---|---|---|
+| `viewer` | `read:orders`, `read:reports` | Read-only users, auditors |
+| `editor` | All `read:*`, `write:orders`, `write:reports` | Standard product users |
+| `manager` | All `editor` permissions + `read:users`, `manage:billing` | Team leads, account managers |
+| `admin` | All permissions | Internal system administrators only |
+| `service` | Specific permissions only, no user-facing resources | Automated services, background jobs |
+
+### Role map (source of truth)
+
+```typescript
+export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
+  viewer: ['read:orders', 'read:reports'],
+  editor: ['read:orders', 'read:reports', 'write:orders', 'write:reports'],
+  manager: ['read:orders', 'read:reports', 'write:orders', 'write:reports', 'read:users', 'manage:billing'],
+  admin: ['read:orders', 'read:reports', 'write:orders', 'write:reports', 'delete:orders', 'read:users', 'write:users', 'delete:users', 'manage:billing', 'manage:settings', 'manage:roles'],
+  service: ['read:orders'],
+};
+
+export function hasPermission(role: Role, permission: Permission): boolean {
+  return ROLE_PERMISSIONS[role]?.includes(permission) ?? false;
+}
+```
+
+Keep this map in a shared package imported by all services. It is the single definition of what each role can do.
+
+---
+
+## Server-Side Enforcement
+
+### Where to check: the service layer
+
+Permission checks belong in the **service layer** — not only in middleware and not in route handlers. Middleware is a convenience for common cases (block unauthenticated requests early). It is not the authorization boundary.
+
+If business logic is called from a route handler, a background job, a webhook handler, or an internal service call, the service layer check runs in all cases. A middleware check on a route does not.
+
+```typescript
+// ✅ Permission check in the service layer — always enforced
+export async function deleteOrder(requestingUserId: string, orderId: string): Promise<void> {
+  const user = await userRepository.findById(requestingUserId);
+  if (!hasPermission(user.role, 'delete:orders')) {
+    throw new ForbiddenError();
+  }
+  await orderRepository.delete(orderId);
+}
+
+// ❌ Wrong — check only in the route handler
+router.delete('/orders/:id', requireRole('admin'), async (req, res) => {
+  await orderRepository.delete(req.params.id); // no check in the actual logic
+});
+// A background job calling orderRepository.delete() directly bypasses this entirely
+```
+
+### Permission middleware (for early rejection)
+
+Add middleware to reject requests that clearly lack the required role before they reach the handler. This reduces noise in logs and responds faster to obvious misuse. But this does not replace the service-layer check.
+
+```typescript
+export function requirePermission(permission: Permission) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const user = req.user; // set by JWT verification middleware
+    if (!user || !hasPermission(user.role, permission)) {
+      return next(new ForbiddenError());
+    }
+    next();
+  };
+}
+
+// Usage — route-level guard (supplementary, not primary)
+router.delete('/orders/:id', requirePermission('delete:orders'), deleteOrderHandler);
+```
+
+### Reading the user from the verified token
+
+The user's role must come from the verified JWT payload or your own database. Never read it from the request body, a query parameter, or any client-supplied header.
+
+```typescript
+// ✅ Correct — role from verified JWT payload
+export function jwtMiddleware(req: Request, res: Response, next: NextFunction) {
+  const token = extractBearerToken(req);
+  const payload = jwt.verify(token, publicKey, {
+    algorithms: ['RS256'],
+    issuer: process.env.JWT_ISSUER,
+    audience: process.env.JWT_AUDIENCE,
+  });
+  req.user = { id: payload.sub as string, role: payload.role as Role };
+  next();
+}
+
+// ❌ Wrong — role from the request body
+const { role } = req.body;
+if (role === 'admin') { ... }
+
+// ❌ Wrong — role from a custom header
+const role = req.headers['x-user-role'];
+if (role === 'admin') { ... }
+```
+
+---
+
+## Resource Ownership Checks
+
+Role-based checks are not enough for user-owned resources. A user with `read:orders` should not be able to read another user's orders — even though both users have the same role.
+
+Always verify both the permission AND that the user owns (or is explicitly authorized to access) the specific resource.
+
+```typescript
+// ✅ Permission check + ownership check
+export async function getOrder(requestingUserId: string, orderId: string): Promise<Order> {
+  const user = await userRepository.findById(requestingUserId);
+  if (!hasPermission(user.role, 'read:orders')) {
+    throw new ForbiddenError();
+  }
+
+  const order = await orderRepository.findById(orderId);
+  if (!order) throw new NotFoundError('Order');
+
+  // Ownership check — admins and managers can access any order
+  const canAccessAny = hasPermission(user.role, 'manage:billing');
+  if (!canAccessAny && order.userId !== requestingUserId) {
+    throw new ForbiddenError();
+  }
+
+  return order;
+}
+
+// ❌ Wrong — permission check without ownership check
+export async function getOrder(requestingUserId: string, orderId: string): Promise<Order> {
+  const user = await userRepository.findById(requestingUserId);
+  if (!hasPermission(user.role, 'read:orders')) throw new ForbiddenError();
+  return orderRepository.findById(orderId); // any 'editor' can read any user's orders
+}
+```
+
+> **Rule:** Never query a resource by ID alone without also asserting that the requesting user is authorized to access that specific record. This prevents Insecure Direct Object Reference (IDOR) vulnerabilities.
+
+---
+
+## Admin and Sensitive Endpoints
+
+Administrative and sensitive operations require additional safeguards beyond role checks.
+
+### Explicit admin permission, not role name comparison
+
+Check for a specific permission, not the string `"admin"`. Role names can change; permission strings are stable.
+
+```typescript
+// ✅ Correct — check the permission
+if (!hasPermission(user.role, 'manage:roles')) throw new ForbiddenError();
+
+// ❌ Wrong — check the role name string
+if (user.role !== 'admin') throw new ForbiddenError();
+```
+
+### Audit logging for sensitive operations
+
+Every write to a sensitive resource must produce an audit log entry. The log must record who performed the action, what changed, and when.
+
+```typescript
+export async function assignRole(
+  requestingUserId: string,
+  targetUserId: string,
+  newRole: Role,
+): Promise<void> {
+  const requestingUser = await userRepository.findById(requestingUserId);
+  if (!hasPermission(requestingUser.role, 'manage:roles')) {
+    throw new ForbiddenError();
+  }
+
+  const previousRole = await userRepository.getRole(targetUserId);
+  await userRepository.setRole(targetUserId, newRole);
+
+  log.info('ROLE_ASSIGNED', {
+    performedBy: requestingUserId,
+    targetUser: targetUserId,
+    previousRole,
+    newRole,
+  });
+}
+```
+
+### Separate admin surface
+
+Admin operations should be behind a separate internal route prefix (e.g. `/admin/*` or `/internal/*`) protected by both permission checks and network-level restrictions (e.g. VPN-only, internal load balancer only). Do not mix admin and user-facing routes under the same prefix.
+
+```typescript
+// Separate router for admin operations
+const adminRouter = express.Router();
+adminRouter.use(requirePermission('manage:settings')); // applied to all admin routes
+adminRouter.get('/users', listUsersHandler);
+adminRouter.post('/users/:id/role', assignRoleHandler);
+
+app.use('/admin', adminRouter);
+```
+
+---
+
+## Forbidden Patterns
+
+These patterns are blocked at code review. Any instance found in existing code is a required remediation item.
+
+| Pattern | Why it is forbidden | Use instead |
+|---|---|---|
+| Permission check only in the frontend | Frontend is not a security boundary | Server-side check on every request |
+| Role read from `req.body` or headers | Client controls the value | Read from verified JWT or database |
+| Role name string comparison (`=== 'admin'`) | Fragile, breaks on role renames | `hasPermission(user.role, 'permission')` |
+| Permission check only in route middleware | Background jobs and internal calls bypass it | Check in the service layer |
+| Resource access without ownership check | IDOR — any user can access any record | Check ownership in addition to role |
+| Wildcards granted to non-admin roles | Over-privilege | Define explicit permissions per role |
+| `admin` role assigned to service accounts | Service accounts should have only what they need | Assign a `service` role with specific permissions |
+| Skipping auth checks on internal routes | Internal does not mean safe | Enforce permissions on all routes |
+
+### Auditing your codebase
+
+```bash
+# Find raw role string comparisons
+grep -rn "role.*===.*['\"]admin['\"]" src/ --include="*.ts"
+
+# Find permission checks in route handlers without a service-layer guard
+grep -rn "requireRole\|requirePermission" src/routes/ --include="*.ts"
+
+# Find direct database calls without a preceding permission variable
+grep -rn "repository\.delete\|repository\.update" src/ --include="*.ts"
+```
+
+---
+
+## Quick Reference
+
+```typescript
+// ✅ Define permissions as a closed type
+type Permission = 'read:orders' | 'write:orders' | 'delete:orders' | ...;
+
+// ✅ Check permissions in the service layer
+const user = await userRepository.findById(requestingUserId);
+if (!hasPermission(user.role, 'delete:orders')) throw new ForbiddenError();
+
+// ✅ Check ownership after checking role
+if (order.userId !== requestingUserId && !hasPermission(user.role, 'manage:billing')) {
+  throw new ForbiddenError();
+}
+
+// ✅ Role from verified JWT only
+const payload = jwt.verify(token, publicKey, { algorithms: ['RS256'], ... });
+req.user = { id: payload.sub, role: payload.role };
+
+// ❌ Role from request body or headers
+// ❌ Permission check only in middleware or route handler
+// ❌ Resource access without ownership check (IDOR)
+// ❌ String comparison against role names
+// ❌ Wildcards for non-admin roles
+```
+
+| Task | How |
+|---|---|
+| Check a permission | `hasPermission(user.role, 'action:resource')` |
+| Get the user's role | From verified JWT payload or database — never from the request |
+| Protect a route | `requirePermission('action:resource')` middleware + service-layer check |
+| Protect a specific record | Role check + ownership check (`resource.userId === requestingUserId`) |
+| Protect an admin endpoint | Specific permission check + audit log on every write |
+| Add a new permission | Add to the `Permission` type and the `ROLE_PERMISSIONS` map — requires code review |
+| Assign a role | Only users with `manage:roles` permission can call `assignRole()` |
+| Audit who changed what | Log `performedBy`, `targetUser`, old value, new value on every sensitive write |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
