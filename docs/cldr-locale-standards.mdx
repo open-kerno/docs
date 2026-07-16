@@ -1,0 +1,318 @@
+---
+sidebar_position: 28
+title: CLDR Locale Standards
+description: Engineering guide for storing and using Unicode CLDR underscore-separated locale identifiers in backend libraries, database collations, and ICU-based systems.
+author: CTO
+tags: [standards, cldr, locale, i18n, icu, database, typescript, go]
+---
+
+# CLDR Locale Standards
+
+> **From the CTO — Required reading for all product and engineering teams.**
+> This is not a suggestion. Every system that uses ICU libraries, PostgreSQL collations, or backend i18n frameworks that expect CLDR locale format must follow this guide.
+
+---
+
+## Table of Contents
+
+1. [Why This Matters](#why-this-matters)
+2. [The Standard: Unicode CLDR Format](#the-standard-unicode-cldr-format)
+3. [CLDR vs BCP 47: Which Format to Use](#cldr-vs-bcp-47-which-format-to-use)
+4. [Official Tooling](#official-tooling)
+5. [Database Best Practices](#database-best-practices)
+6. [Quick Reference](#quick-reference)
+
+---
+
+## Why This Matters
+
+Two locale formats are in active use across our systems. They look almost identical. They differ by one character — a hyphen vs an underscore. Mixing them produces errors that are frustrating to diagnose because the locale string looks correct to a human reading it.
+
+The `cldr_locale` field stores the **Unicode CLDR format** (`es_CO`). This format is required by ICU-based libraries, PostgreSQL collation names, Java's `Locale` class, Python's `locale` module, and many backend i18n frameworks. Passing a BCP 47 hyphenated value (`es-CO`) to these systems causes a parse error or a silent fallback to the C locale — neither of which is obvious from the error message.
+
+### What Goes Wrong Without a Standard
+
+**ICU library calls fail silently.**
+The International Components for Unicode (ICU) library — used in PostgreSQL, Android, Java, and many backend services — parses locale identifiers in underscore format. Passing `es-CO` instead of `es_CO` causes ICU to parse only the language portion (`es`) and discard the region. Formatting rules for Colombia are never applied. Numbers and dates are formatted for a generic Spanish locale, not a Colombian one.
+
+**PostgreSQL collation names are incorrect.**
+PostgreSQL collation identifiers follow CLDR/POSIX conventions. `CREATE COLLATION` and `ORDER BY ... COLLATE` require the underscore form. A migration that uses `en-US` as a collation name will fail with a "collation not found" error. The underscored form `en_US` is what the database expects.
+
+**Java and Python locale parsing fails.**
+`java.util.Locale.forLanguageTag()` accepts BCP 47 (hyphen). But `new Locale("en", "US")` and `Locale.of("en", "US")` use the CLDR underscore convention internally and for serialization. Python's `locale.setlocale()` requires POSIX/CLDR format. Libraries that accept user-stored locale strings and pass them to Java or Python internals silently break when the hyphen form is stored.
+
+**Config files and environment variables produce wrong output.**
+Backend services configured with `LANG=en-US` or `LC_ALL=es-CO` will not apply the expected formatting rules on Linux systems. The POSIX and CLDR forms use underscores. A misconfigured environment variable affects every operation in that process.
+
+> **Architectural warning:** The CLDR and BCP 47 formats serve different layers of the stack. Using the wrong one does not always produce an obvious error — it often produces a silent degradation where the system falls back to a default locale, the bug goes undetected in testing, and users in non-default locales see wrong formatting in production.
+
+---
+
+## The Standard: Unicode CLDR Format
+
+We store all `cldr_locale` values using the **Unicode CLDR locale identifier** format. This is the format defined by the Unicode Consortium's Common Locale Data Repository — the largest and most widely used source of locale data in the world.
+
+### Format Rules
+
+```
+[language subtag]_[REGION subtag]
+```
+
+| Component | Rule | Source standard | Example |
+|---|---|---|---|
+| Language subtag | 2 lowercase letters | ISO 639-1 | `en`, `es`, `pt` |
+| `_` | Mandatory underscore separator | Unicode CLDR | `_` |
+| REGION subtag | 2 uppercase letters | ISO 3166-1 alpha-2 | `US`, `CO`, `BR` |
+
+> **See also:** The `locale` field (BCP 47, hyphen separator) is documented in the [Locale Standards](./locale-standards) guide. The `language_code` field (ISO 639-1 only) is documented in the [Language Code Standards](./language-code-standards) guide.
+
+### Reference: Common CLDR Locales
+
+| CLDR locale | Language | Region |
+|---|---|---|
+| `en_US` | English | United States |
+| `en_GB` | English | United Kingdom |
+| `en_CA` | English | Canada |
+| `es_CO` | Spanish | Colombia |
+| `es_MX` | Spanish | Mexico |
+| `es_ES` | Spanish | Spain |
+| `es_AR` | Spanish | Argentina |
+| `pt_BR` | Portuguese | Brazil |
+| `pt_PT` | Portuguese | Portugal |
+| `fr_FR` | French | France |
+| `fr_CA` | French | Canada |
+| `de_DE` | German | Germany |
+| `it_IT` | Italian | Italy |
+| `ja_JP` | Japanese | Japan |
+| `zh_CN` | Chinese (Simplified) | China |
+| `zh_TW` | Chinese (Traditional) | Taiwan |
+
+### Normalization Rules
+
+| Raw Input | Stored Value |
+|---|---|
+| `en-US` | `en_US` — convert BCP 47 hyphen to CLDR underscore |
+| `es-CO` | `es_CO` |
+| `EN_US` | `en_US` — lowercase language subtag |
+| `en_us` | `en_US` — uppercase region subtag |
+| `Es_Co` | `es_CO` |
+| `en` | ❌ Invalid — region is required |
+| `en_USA` | ❌ Invalid — region must be 2 letters (ISO 3166-1 alpha-2) |
+| `english_US` | ❌ Invalid — language must be 2-letter ISO 639-1 code |
+| `zh_Hans_CN` | ⚠️ Valid CLDR with script subtag — outside this field's scope; store as `zh_CN` |
+
+> **Rule:** Accept the BCP 47 hyphen form (`en-US`) as valid input and convert it. Lowercase the language subtag. Uppercase the region subtag. Replace any hyphen with an underscore. Reject anything that does not reduce to a valid two-part `language_REGION` identifier.
+
+---
+
+## CLDR vs BCP 47: Which Format to Use
+
+This is the most important decision when working with locales. Use the wrong format and library calls fail or silently degrade.
+
+| `locale` field (BCP 47) | `cldr_locale` field (Unicode CLDR) |
+|---|---|
+| Hyphen separator: `en-US` | Underscore separator: `en_US` |
+| HTTP `Accept-Language` headers | ICU library calls |
+| JavaScript `Intl` API (`Intl.DateTimeFormat`, `Intl.NumberFormat`) | PostgreSQL collation names |
+| Browser locale negotiation | Java `Locale` serialization |
+| iOS / Android locale APIs | Python `locale` module |
+| Translation CDN config | Linux `LANG`, `LC_ALL` environment variables |
+| User-facing API responses | Backend i18n framework config files |
+
+### Conversion Between Formats
+
+The two formats differ only in the separator. Conversion is trivial and must happen at the boundary between layers.
+
+```
+BCP 47 → CLDR:  replace '-' with '_'    en-US → en_US
+CLDR → BCP 47:  replace '_' with '-'    en_US → en-US
+```
+
+Do this conversion explicitly at the interface boundary. Do not store one format and pass it directly to a system that expects the other.
+
+---
+
+## Official Tooling
+
+---
+
+### TypeScript / JavaScript
+
+**Validation and parsing:** Use `Intl.Locale` (built-in, no install) for validation, then convert the output to CLDR format.
+
+```ts
+function normalizeCldrLocale(raw: string): string {
+  // Accept both BCP 47 (hyphen) and CLDR (underscore) as input
+  const bcp47 = raw.replace('_', '-');
+  let tag: Intl.Locale;
+  try {
+    tag = new Intl.Locale(bcp47);
+  } catch {
+    throw new Error(`Invalid CLDR locale: "${raw}"`);
+  }
+  const language = tag.language?.toLowerCase();
+  const region = tag.region?.toUpperCase();
+  if (!language || language.length !== 2) {
+    throw new Error(`Invalid CLDR locale language subtag in: "${raw}"`);
+  }
+  if (!region || region.length !== 2) {
+    throw new Error(`Invalid CLDR locale region subtag in: "${raw}" — region is required`);
+  }
+  // Return in CLDR underscore format
+  return `${language}_${region}`;
+}
+```
+
+**ICU formatting with CLDR locale:**
+
+```ts
+// Convert stored CLDR locale to BCP 47 before passing to Intl APIs
+function cldrToBcp47(cldrLocale: string): string {
+  return cldrLocale.replace('_', '-');
+}
+
+const cldrLocale = 'es_CO'; // stored value
+const formatted = new Intl.NumberFormat(cldrToBcp47(cldrLocale)).format(1234567.89);
+// → '1.234.567,89'
+```
+
+> Always convert `cldr_locale` to BCP 47 before passing to `Intl.DateTimeFormat`, `Intl.NumberFormat`, or `Intl.PluralRules`. The `Intl` API accepts both forms, but explicit conversion prevents bugs when the format matters to downstream systems.
+
+Do not store the BCP 47 hyphen form in the `cldr_locale` field. The conversion from hyphen to underscore must happen before storage, not at read time.
+
+---
+
+### Go
+
+**Package:** [`golang.org/x/text/language`](https://pkg.go.dev/golang.org/x/text/language)
+
+```bash
+go get golang.org/x/text/language
+```
+
+```go
+import (
+    "fmt"
+    "strings"
+    "golang.org/x/text/language"
+)
+
+func normalizeCldrLocale(raw string) (string, error) {
+    // Accept both BCP 47 (hyphen) and CLDR (underscore) as input
+    bcp47 := strings.Replace(raw, "_", "-", 1)
+
+    tag, err := language.Parse(bcp47)
+    if err != nil {
+        return "", fmt.Errorf("invalid CLDR locale %q: %w", raw, err)
+    }
+
+    base, confB := tag.Base()
+    region, confR := tag.Region()
+
+    if confB == language.No || len(base.String()) != 2 {
+        return "", fmt.Errorf("invalid CLDR locale language subtag in %q", raw)
+    }
+    if confR == language.No || len(region.String()) != 2 {
+        return "", fmt.Errorf("invalid CLDR locale region subtag in %q — region is required", raw)
+    }
+
+    // Return in CLDR underscore format
+    return fmt.Sprintf("%s_%s", base.String(), region.String()), nil
+}
+```
+
+**PostgreSQL collation use:**
+
+```go
+// When building a collation clause for a query, use the CLDR format directly
+collation := "es_CO" // stored cldr_locale value
+query := fmt.Sprintf(`SELECT name FROM products ORDER BY name COLLATE "%s"`, collation)
+```
+
+> PostgreSQL collation names match CLDR/POSIX format. The `cldr_locale` stored value can be used directly in `COLLATE` clauses without conversion.
+
+---
+
+## Database Best Practices
+
+### Column Type
+
+Store `cldr_locale` values as `VARCHAR(10)`. The two-part `language_REGION` identifier is always 5 characters, but `VARCHAR(10)` gives safe headroom.
+
+| Decision | Recommendation |
+|---|---|
+| **Type** | `VARCHAR(10)` |
+| **Format** | `language_REGION` — lowercase language, uppercase region, underscore separator |
+| **Nullable** | Only if the locale is genuinely optional |
+| **Default** | Set a market-appropriate default (e.g., `'es_CO'`) |
+| **Encoding** | Plain ASCII |
+
+```sql
+-- PostgreSQL: enforce CLDR underscore format
+ALTER TABLE users
+  ADD COLUMN cldr_locale VARCHAR(10)
+  CHECK (cldr_locale ~ '^[a-z]{2}_[A-Z]{2}$');
+```
+
+### Using cldr\_locale for PostgreSQL Collations
+
+The `cldr_locale` field value can be used directly to set sort order in queries.
+
+```sql
+-- Sort product names using Colombian Spanish collation rules
+SELECT name FROM products
+ORDER BY name COLLATE "es_CO";
+
+-- Create a column with a specific collation
+ALTER TABLE products
+  ADD COLUMN name_es VARCHAR(255) COLLATE "es_CO";
+```
+
+> Verify that the collation is installed in your PostgreSQL instance: `SELECT * FROM pg_collation WHERE collname = 'es_CO';`. Cloud-hosted PostgreSQL (RDS, Cloud SQL, AlloyDB) may require enabling the `pg_icu` extension or selecting ICU-aware collations at database creation time.
+
+### Indexes
+
+Index `cldr_locale` when filtering or segmenting data by locale.
+
+```sql
+-- Standard index for locale-based filtering
+CREATE INDEX idx_users_cldr_locale ON users (cldr_locale);
+
+-- Composite: locale + active
+CREATE INDEX idx_users_cldr_active ON users (cldr_locale, is_active);
+```
+
+---
+
+## Quick Reference
+
+```
+✅  Store as: en_US  |  es_CO  |  pt_BR  |  fr_CA  |  zh_TW
+❌  Never store: en-US  |  EN_US  |  en_us  |  en  |  en_USA  |  english_US
+```
+
+| Task | How |
+|---|---|
+| Accept raw input | Replace `-` with `_`, lowercase language, uppercase region, validate |
+| Validate in TypeScript | Parse via `Intl.Locale` (convert `_` to `-` first), then reformat with `_` |
+| Validate in Go | Parse via `golang.org/x/text/language`, output with `_` separator |
+| Store in DB | `VARCHAR(10)`, `CHECK (cldr_locale ~ '^[a-z]{2}_[A-Z]{2}$')` |
+| Use with `Intl` API | Convert to BCP 47 first: `cldrLocale.replace('_', '-')` |
+| Use with PostgreSQL COLLATE | Use stored value directly: `ORDER BY col COLLATE "es_CO"` |
+| Use with Java `Locale` | `Locale.forLanguageTag(cldrLocale.replace('_', '-'))` |
+| Use with Python `locale` | `locale.setlocale(locale.LC_ALL, 'es_CO.UTF-8')` |
+
+| Format | Field | Separator | Example | Used by |
+|---|---|---|---|---|
+| BCP 47 | `locale` | `-` (hyphen) | `es-CO` | HTTP, JS `Intl`, browser APIs |
+| Unicode CLDR | `cldr_locale` | `_` (underscore) | `es_CO` | ICU, PostgreSQL, Java, Python |
+| ISO 639-1 | `language_code` | — | `es` | Content language, translation routing |
+
+| Language | Approved package |
+|---|---|
+| Node.js / TypeScript | `Intl.Locale` (built-in) + manual `_`/`-` conversion |
+| Go | [`golang.org/x/text/language`](https://pkg.go.dev/golang.org/x/text/language) |
+
+---
+
+*Questions or edge cases not covered here? Open a discussion in the `#engineering-standards` channel.*
